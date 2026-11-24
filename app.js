@@ -231,7 +231,7 @@ function inHome(amount, cur, rate, home) {
   return last ? { v: amount * last.rate, ok: true, approx: true } : { v: 0, ok: false };
 }
 function money(n, opts = {}) {
-  const c = T.trip?.currency || "USD";
+  const c = opts.cur || T.trip?.currency || "USD";
   try { return new Intl.NumberFormat("en-US", { style: "currency", currency: c, maximumFractionDigits: opts.cents ? 2 : 0 }).format(n || 0); }
   catch { return (n < 0 ? "-" : "") + c + " " + Math.round(Math.abs(n || 0)).toLocaleString("en-US"); }
 }
@@ -1405,6 +1405,7 @@ function bookingModal(id, kind, prefill = {}) {
     <div class="fx-row" id="bmFx"><span id="bmLab">1 EUR =</span><input id="bm-rate" type="number" min="0" step="any" value="${esc(b.home === homeCur() && b.costRate ? b.costRate : "")}" aria-label="Exchange rate"><span id="bmHome">USD</span><b id="bmOut"></b><span class="hint" id="bmSrc"></span></div>
     <label class="row" style="gap:8px;font-weight:600"><input type="checkbox" id="bm-planned" ${b.planned ? "checked" : ""}> Just an estimate (not paid yet)</label>
     <div class="field"><span>Split between</span><div class="splitbox">${members().map(e => `<label><input type="checkbox" data-split value="${esc(e)}" ${(b.split || members()).includes(e) ? "checked" : ""}> ${esc(nameOf(e))}</label>`).join("")}</div></div>
+    <div class="field" data-g="lodging" id="bmNightsF"><span>Who's staying which nights</span><div id="bmNights"></div></div>
     <label class="field" for="bm-notes">Notes<textarea id="bm-notes" data-k="notes" rows="2" maxlength="600">${esc(b.notes || "")}</textarea></label>
     <div class="row between">${id ? `<button class="btn danger" type="button" id="bmDel">Delete</button>` : "<span></span>"}<div class="row"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn accent" type="button" id="bmSave">Save</button></div></div>`, m => {
     $$("[data-close]", m).forEach(x => x.onclick = closeModal);
@@ -1444,6 +1445,26 @@ function bookingModal(id, kind, prefill = {}) {
     attachSuggest($("#bm-addr"), $("#bmAddrL"), { near: () => nearPoint(null), onPick: async x => { loc = { lat: x.lat, lon: x.lon }; $("#bm-addr").value = (x.full ? [x.name, x.addr] : [x.name, x.addr, x.city, x.country]).filter(Boolean).join(", "); if (!$("#bm-title").value) $("#bm-title").value = x.name;
       const y = await withAddress(x); if (loc?.lat === x.lat && y.addr !== x.addr) $("#bm-addr").value = [y.name, y.addr, y.city, y.country].filter(Boolean).join(", "); } });
     $("#bm-addr").addEventListener("input", () => { loc = null; });
+    // nights: everyone ticked for every night by default; untick the nights someone isn't there
+    let nightSel = b.nights ? JSON.parse(JSON.stringify(b.nights)) : {};
+    const nightsNow = () => stayNights($("#bm-checkIn")?.value, $("#bm-checkOut")?.value);
+    const paintNights = () => {
+      const ns = nightsNow(), who = $$("[data-split]", m).filter(x => x.checked).map(x => x.value), box = $("#bmNights");
+      if (!ns.length || !who.length) { box.innerHTML = `<p class="hint">Add check-in and check-out dates to split the cost by night.</p>`; return; }
+      const has = (e, n) => !nightSel[ekey(e)] || nightSel[ekey(e)].includes(n);
+      const cost = num($("#bm-cost").value), sh = nightShares(cost, ns, who, Object.fromEntries(who.map(e => [e, nightSel[ekey(e)] || null])));
+      box.innerHTML = `<div class="nights-wrap"><table class="nights"><thead><tr><th></th>${ns.map(n => `<th>${esc(fmtD(n, { weekday: "short" }))}<span>${esc(fmtD(n, { month: "numeric", day: "numeric" }))}</span></th>`).join("")}${cost ? `<th>Share</th>` : ""}</tr></thead>
+        <tbody>${who.map(e => `<tr><th>${esc(nameOf(e))}</th>${ns.map(n => `<td><input type="checkbox" data-night="${esc(e)}|${n}" ${has(e, n) ? "checked" : ""} aria-label="${esc(nameOf(e))}, night of ${esc(fmtD(n, { month: "short", day: "numeric" }))}"></td>`).join("")}${cost ? `<td class="num">${esc(money(sh[e] || 0, { cents: true, cur: $("#bm-costCur").value }))}</td>` : ""}</tr>`).join("")}</tbody></table></div>
+        <p class="hint">Untick the nights someone isn't there. Each night's cost is split between whoever is staying that night.</p>`;
+    };
+    $("#bmNights").addEventListener("change", e => { const c = e.target.closest("[data-night]"); if (!c) return;
+      const [em, n] = c.dataset.night.split("|"), k = ekey(em), ns = nightsNow();
+      let cur = nightSel[k] ? [...nightSel[k]] : [...ns]; cur = c.checked ? [...new Set([...cur, n])] : cur.filter(x => x !== n);
+      if (ns.every(x => cur.includes(x))) delete nightSel[k]; else nightSel[k] = cur.filter(x => ns.includes(x)).sort();
+      paintNights(); });
+    ["#bm-checkIn", "#bm-checkOut", "#bm-cost", "#bm-costCur"].forEach(q => $(q, m)?.addEventListener("change", paintNights));
+    $$("[data-split]", m).forEach(x => x.addEventListener("change", paintNights));
+    paintNights();
     if (id) $("#bmDel").onclick = () => { if (!armed) { armed = true; $("#bmDel").textContent = "Tap again to delete"; return; } delete T.bookings[id]; remove(tp("bookings/" + id)); closeModal(); renderTrip(); renderMap(); };
     $("#bmSave").onclick = () => {
       const out = { kind: k };
@@ -1451,6 +1472,8 @@ function bookingModal(id, kind, prefill = {}) {
       out.cost = num(out.cost); out.costCur = $("#bm-costCur").value; out.costRate = out.costCur === homeCur() ? 1 : num($("#bm-rate").value); out.home = homeCur();
       if (out.cost && !out.costRate) { $("#bm-rate").focus(); $("#bmSrc").textContent = `Add the exchange rate from ${out.costCur} to ${homeCur()} to save.`; return; }
       out.planned = $("#bm-planned").checked; out.split = $$("[data-split]", m).filter(x => x.checked).map(x => x.value);
+      { const ns = nightsNow(), keep = {}; if ((KINDS[k] || KINDS.other).group === "lodging" && ns.length) for (const e of out.split) { const v = nightSel[ekey(e)]; if (v) keep[ekey(e)] = v.filter(x => ns.includes(x)); }
+        out.nights = Object.keys(keep).length ? keep : null; }
       out.stops = (KINDS[k] || KINDS.other).group === "transport" ? stops.filter(s => (s.at || "").trim()) : [];
       if (k === "flight") {
         const L2 = legs.filter(l => l.from || l.to || l.num || l.depDate);
@@ -1985,7 +2008,7 @@ const HELP = [
     <p><b>One-time setup (trip owner):</b></p><ol><li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Gmail API in Google Cloud</a>, pick your Firebase project, and click <b>Enable</b>.</li>
     <li>In <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Google Auth Platform → Audience</a>: if it says <i>Testing</i>, add each person's Gmail under <b>Test users</b>.</li>
     <li>The first time, Google says it hasn't verified the app. That's expected for a personal app: click <b>Advanced → Go to …</b> and tick the box to allow reading email.</li></ol>`],
-  ["budget", "Budget and money", `<p>Log what you spend in any currency. Wayfinder converts it to the trip's home currency with that day's exchange rate, splits it between the people you pick, and works out who owes whom. Bookings with a cost count too.</p To settle up, add how people can pay you (Venmo, PayPal, Cash App or Zelle). Whoever owes gets a pay button with the amount filled in, then taps <b>Mark paid</b>.</p>`],
+  ["budget", "Budget and money", `<p>Log what you spend in any currency. Wayfinder converts it to the trip's home currency with that day's exchange rate, splits it between the people you pick, and works out who owes whom. Bookings with a cost count too. For a hotel or other stay, untick the nights someone isn't there under <b>Who's staying which nights</b>: each night's cost is split between whoever is staying that night.</p><p> To settle up, add how people can pay you (Venmo, PayPal, Cash App or Zelle). Whoever owes gets a pay button with the amount filled in, then taps <b>Mark paid</b>.</p>`],
   ["lists", "To-do and packing", `<p><b>To-do</b> is shared: assign tasks and set due dates. <b>Packing</b> is private: everyone on the trip has their own list. <b>Suggested for this trip</b> at the top of Packing adds things the weather and destinations call for, like an umbrella when rain is likely or the right plug adapter.</p>`],
   ["photos", "Photos and the family link", `<p><b>Photos</b> is a shared album: everyone on the trip can add photos (several at once), pick the day they belong to, add captions, and filter by day or person. Tap a photo to flip through them. They also go into the memory book.</p>
     <p><b>Family link</b> (in <b>Share</b>) makes a view-only page of the day-by-day plan, flights and where you're staying for family at home. They don't need to sign in. It leaves out costs, confirmation numbers, notes and photos, and turning it off deletes the page.</p>`],
@@ -3057,9 +3080,17 @@ function spendItems() {
   }
   for (const [id, b] of Object.entries(T.bookings)) if (num(b.cost)) {
     const k = KINDS[b.kind] || KINDS.other, c = b.costCur || b.home || homeCur(), h = inHome(num(b.cost), c, b.costRate, b.home);
-    out.push({ id, src: "booking", desc: b.title || k.label, orig: num(b.cost), cur: c, amount: h.v, noRate: !h.ok, approx: h.approx, category: k.cat, date: b.depDate || b.checkIn || b.date || "", paidBy: b.paidBy || "", split: b.split || [], planned: !!b.planned, kind: "expense", created: b.created || 0 });
+    out.push({ id, src: "booking", desc: b.title || k.label, orig: num(b.cost), cur: c, amount: h.v, noRate: !h.ok, approx: h.approx, category: k.cat, date: b.depDate || b.checkIn || b.date || "", paidBy: b.paidBy || "", split: b.split || [], planned: !!b.planned, kind: "expense", created: b.created || 0,
+      nightList: b.nights && (KINDS[b.kind] || KINDS.other).group === "lodging" ? stayNights(b.checkIn, b.checkOut) : null, nights: b.nights || null });
   }
   return out.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || (b.created || 0) - (a.created || 0));
+}
+// the nights of a stay (each night named by its date), and each person's share when the cost is split night by night
+function stayNights(a, b) { if (!validIso(a) || !validIso(b) || b <= a) return []; const out = []; for (let d = a; d < b && out.length < 120; d = addDays(d, 1)) out.push(d); return out; }
+function nightShares(total, ns, who, sel) {   // sel[email] = list of nights, or null for every night
+  const out = Object.fromEntries(who.map(e => [e, 0])), per = total / ns.length;
+  for (const n of ns) { let here = who.filter(e => !sel[e] || sel[e].includes(n)); if (!here.length) here = who; for (const e of here) out[e] += per / here.length; }
+  return out;
 }
 function balances() {
   const bal = Object.fromEntries(members().map(e => [e, 0]));
@@ -3068,7 +3099,9 @@ function balances() {
     if (x.kind === "payment") { if (x.paidBy in bal) bal[x.paidBy] += x.amount; if (x.to in bal) bal[x.to] -= x.amount; continue; }
     if (!x.paidBy || !(x.paidBy in bal)) continue;
     const who = (x.split && x.split.length ? x.split : members()).filter(e => e in bal); if (!who.length) continue;
-    bal[x.paidBy] += x.amount; for (const e of who) bal[e] -= x.amount / who.length;
+    bal[x.paidBy] += x.amount;
+    if (x.nightList?.length) { const sh = nightShares(x.amount, x.nightList, who, Object.fromEntries(who.map(e => [e, x.nights[ekey(e)] || null]))); for (const e of who) bal[e] -= sh[e]; }
+    else for (const e of who) bal[e] -= x.amount / who.length;
   }
   // who pays whom, fewest transfers
   const debt = Object.entries(bal).map(([e, v]) => [e, Math.round(v * 100) / 100]);
