@@ -831,3 +831,15 @@ details summary { cursor: pointer; padding: 6px 0; }
 .nights tbody tr + tr { border-top: 1px solid var(--line); }
 .nights input { width: 18px; height: 18px; accent-color: var(--accent); }
 .nights .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- paying back, cost by cost ---- */
+.owe { flex-wrap: wrap; }
+.owe-for { flex-basis: 100%; font-size: 12.5px; color: var(--muted); padding-left: 38px; }
+.pbs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.pb { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); white-space: nowrap; }
+.pb.part { background: var(--warn-soft); color: var(--ink); }
+.pb.ok { background: color-mix(in srgb, var(--leaf) 14%, transparent); color: var(--leaf); }
+.st-for { display: grid; gap: 6px; }
+.st-item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.st-item input { width: 18px; height: 18px; accent-color: var(--accent); }
+.st-item .hint { display: block; }

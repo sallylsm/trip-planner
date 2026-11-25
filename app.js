@@ -2008,7 +2008,7 @@ const HELP = [
     <p><b>One-time setup (trip owner):</b></p><ol><li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Gmail API in Google Cloud</a>, pick your Firebase project, and click <b>Enable</b>.</li>
     <li>In <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Google Auth Platform → Audience</a>: if it says <i>Testing</i>, add each person's Gmail under <b>Test users</b>.</li>
     <li>The first time, Google says it hasn't verified the app. That's expected for a personal app: click <b>Advanced → Go to …</b> and tick the box to allow reading email.</li></ol>`],
-  ["budget", "Budget and money", `<p>Log what you spend in any currency. Wayfinder converts it to the trip's home currency with that day's exchange rate, splits it between the people you pick, and works out who owes whom. Bookings with a cost count too. For a hotel or other stay, untick the nights someone isn't there under <b>Who's staying which nights</b>: each night's cost is split between whoever is staying that night.</p><p> To settle up, add how people can pay you (Venmo, PayPal, Cash App or Zelle). Whoever owes gets a pay button with the amount filled in, then taps <b>Mark paid</b>.</p>`],
+  ["budget", "Budget and money", `<p>Log what you spend in any currency. Wayfinder converts it to the trip's home currency with that day's exchange rate, splits it between the people you pick, and works out who owes whom. Bookings with a cost count too. For a hotel or other stay, untick the nights someone isn't there under <b>Who's staying which nights</b>: each night's cost is split between whoever is staying that night.</p><p> To settle up, add how people can pay you (Venmo, PayPal, Cash App or Zelle). Whoever owes gets a pay button with the amount filled in.</p><p>When someone pays you back, tap <b>Record payment</b>, tick what it was for (the concert tickets, the hotel), and lower the amount if they only paid part. Each cost in <b>All costs</b> shows who's paid back and who still owes, and <b>Who owes whom</b> lists what each amount is for.</p>`],
   ["lists", "To-do and packing", `<p><b>To-do</b> is shared: assign tasks and set due dates. <b>Packing</b> is private: everyone on the trip has their own list. <b>Suggested for this trip</b> at the top of Packing adds things the weather and destinations call for, like an umbrella when rain is likely or the right plug adapter.</p>`],
   ["photos", "Photos and the family link", `<p><b>Photos</b> is a shared album: everyone on the trip can add photos (several at once), pick the day they belong to, add captions, and filter by day or person. Tap a photo to flip through them. They also go into the memory book.</p>
     <p><b>Family link</b> (in <b>Share</b>) makes a view-only page of the day-by-day plan, flights and where you're staying for family at home. They don't need to sign in. It leaves out costs, confirmation numbers, notes and photos, and turning it off deletes the page.</p>`],
@@ -3092,16 +3092,35 @@ function nightShares(total, ns, who, sel) {   // sel[email] = list of nights, or
   for (const n of ns) { let here = who.filter(e => !sel[e] || sel[e].includes(n)); if (!here.length) here = who; for (const e of here) out[e] += per / here.length; }
   return out;
 }
+function sharesOf(x) {   // { email: amount } for a cost, honoring who stayed which nights
+  const who = (x.split && x.split.length ? x.split : members()).filter(e => members().includes(e)); if (!who.length) return {};
+  if (x.nightList?.length) return nightShares(x.amount, x.nightList, who, Object.fromEntries(who.map(e => [e, x.nights[ekey(e)] || null])));
+  return Object.fromEntries(who.map(e => [e, x.amount / who.length]));
+}
+// what each person has paid back toward each cost: payments marked "for" certain costs go to those first, anything else goes to the oldest unpaid costs
+function paidBack(items = spendItems()) {
+  const costs = items.filter(x => !x.planned && x.kind !== "payment" && x.paidBy).sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || (a.created || 0) - (b.created || 0));
+  const owed = {}, paid = {}, extra = {};   // keys "costId|email"
+  for (const x of costs) { const sh = sharesOf(x); for (const e in sh) if (e !== x.paidBy) owed[x.id + "|" + e] = { x, e, amt: Math.round(sh[e] * 100) / 100 }; }
+  const pays = items.filter(x => x.kind === "payment" && !x.planned).sort((a, b) => (b.for?.length ? 1 : 0) - (a.for?.length ? 1 : 0) || (a.created || 0) - (b.created || 0));
+  for (const p of pays) {
+    let left = p.amount;
+    const open = k => owed[k] && owed[k].x.paidBy === p.to && owed[k].e === p.paidBy;
+    const fill = k => { const rem = owed[k].amt - (paid[k] || 0); if (rem <= 0.005 || left <= 0.005) return; const a = Math.min(rem, left); paid[k] = (paid[k] || 0) + a; left -= a; };
+    for (const id of p.for || []) { const k = id + "|" + p.paidBy; if (open(k)) fill(k); }
+    for (const k of Object.keys(owed)) if (open(k)) fill(k);
+    if (left > 0.005) extra[p.paidBy + "|" + p.to] = (extra[p.paidBy + "|" + p.to] || 0) + left;
+  }
+  return { owed, paid, extra, rem: k => owed[k] ? Math.max(0, Math.round((owed[k].amt - (paid[k] || 0)) * 100) / 100) : 0 };
+}
 function balances() {
   const bal = Object.fromEntries(members().map(e => [e, 0]));
   for (const x of spendItems()) {
     if (x.planned) continue;
     if (x.kind === "payment") { if (x.paidBy in bal) bal[x.paidBy] += x.amount; if (x.to in bal) bal[x.to] -= x.amount; continue; }
     if (!x.paidBy || !(x.paidBy in bal)) continue;
-    const who = (x.split && x.split.length ? x.split : members()).filter(e => e in bal); if (!who.length) continue;
-    bal[x.paidBy] += x.amount;
-    if (x.nightList?.length) { const sh = nightShares(x.amount, x.nightList, who, Object.fromEntries(who.map(e => [e, x.nights[ekey(e)] || null]))); for (const e of who) bal[e] -= sh[e]; }
-    else for (const e of who) bal[e] -= x.amount / who.length;
+    const sh = sharesOf(x); if (!Object.keys(sh).length) continue;
+    bal[x.paidBy] += x.amount; for (const e in sh) bal[e] -= sh[e];
   }
   // who pays whom, fewest transfers
   const debt = Object.entries(bal).map(([e, v]) => [e, Math.round(v * 100) / 100]);
@@ -3118,7 +3137,10 @@ function viewBudget(v) {
   const spent = real.reduce((a, x) => a + x.amount, 0), planned = plan.reduce((a, x) => a + x.amount, 0), budget = num(T.trip.budget);
   const byCat = {}; for (const x of [...real, ...plan]) { const c = x.category || "Other"; byCat[c] = byCat[c] || { s: 0, p: 0 }; byCat[c][x.planned ? "p" : "s"] += x.amount; }
   const maxC = Math.max(1, ...Object.values(byCat).map(c => c.s + c.p));
-  const { bal, transfers } = balances(), n = members().length;
+  const { bal, transfers } = balances(), n = members().length, PB = paidBack(items);
+  const owesFor = (from, to) => Object.entries(PB.owed).filter(([k, o]) => o.e === from && o.x.paidBy === to && PB.rem(k) > 0.005).map(([k, o]) => `${esc(o.x.desc || "Cost")} ${money(PB.rem(k), { cents: true })}${PB.paid[k] ? " left" : ""}`);
+  const statusOf = x => Object.entries(PB.owed).filter(([, o]) => o.x.id === x.id && o.x.src === x.src).map(([k, o]) => { const r = PB.rem(k), part = PB.paid[k] > 0.005;
+    return `<span class="pb ${r <= 0.005 ? "ok" : part ? "part" : ""}" title="${esc(nameOf(o.e))}'s share: ${money(o.amt, { cents: true })}">${esc(nameOf(o.e))} ${r <= 0.005 ? "✓ paid back" : part ? `paid ${money(PB.paid[k], { cents: true })}, owes ${money(r, { cents: true })}` : `owes ${money(r, { cents: true })}`}</span>`; }).join("");
   const needRate = items.filter(x => x.noRate), byCur = {};
   items.filter(x => x.kind !== "payment" && !x.planned).forEach(x => { byCur[x.cur] = (byCur[x.cur] || 0) + x.orig; });
   v.innerHTML = `<div class="row between"><h2>Budget</h2><button class="btn accent small" type="button" id="addExp">+ Add expense</button></div>
@@ -3131,25 +3153,68 @@ function viewBudget(v) {
     ${budget ? `<div class="meter ${spent + planned > budget ? "over" : ""}"><i style="width:${Math.min(100, (spent + planned) / budget * 100)}%"></i></div>` : ""}
     ${needRate.length ? `<p class="banner">${needRate.length} cost${needRate.length === 1 ? "" : "s"} in another currency still need${needRate.length === 1 ? "s" : ""} an exchange rate, so ${needRate.length === 1 ? "it isn't" : "they aren't"} in the totals yet. Tap ${needRate.length === 1 ? "it" : "them"} below to add one.</p>` : ""}
     ${Object.keys(byCur).length > 1 ? `<p class="hint">Spent by currency: ${Object.entries(byCur).map(([c, v]) => `<b>${fmtCur(v, c)}</b>`).join(" · ")} <span style="opacity:.8">(totals above in ${esc(homeCur())})</span></p>` : ""}
-    ${n > 1 ? `<div class="card" style="display:grid;gap:10px"><div class="row between"><h3>Who owes whom</h3><button class="linkbtn" type="button" id="payMe">${Object.values(payOf(ME.email)).some(Boolean) ? "Edit how to pay me" : "Add how to pay me (Venmo, PayPal…)"}</button></div>
-      ${transfers.length ? `<div class="owes">${transfers.map(t => `<div class="owe">${avatar(t.from)}<span><b>${esc(nameOf(t.from))}</b> owes <b>${esc(nameOf(t.to))}</b></span><span class="amt">${money(t.amt, { cents: true })}</span><button class="btn ghost small" type="button" data-settle="${esc(t.from)}|${esc(t.to)}|${t.amt}">Mark paid</button>${t.from === ME.email && payLinks(t) ? `<div class="pay-row">Pay ${esc(nameOf(t.to))}: ${payLinks(t)}</div>` : ""}</div>`).join("")}</div>` : `<p class="hint">Everyone's even.</p>`}
+    ${n > 1 ? `<div class="card" style="display:grid;gap:10px"><div class="row between"><h3>Who owes whom</h3><span class="row" style="gap:12px"><button class="linkbtn" type="button" id="addPay">Record a payment</button><button class="linkbtn" type="button" id="payMe">${Object.values(payOf(ME.email)).some(Boolean) ? "Edit how to pay me" : "Add how to pay me (Venmo, PayPal…)"}</button></span></div>
+      ${transfers.length ? `<div class="owes">${transfers.map(t => `<div class="owe">${avatar(t.from)}<span><b>${esc(nameOf(t.from))}</b> owes <b>${esc(nameOf(t.to))}</b></span><span class="amt">${money(t.amt, { cents: true })}</span><button class="btn ghost small" type="button" data-settle="${esc(t.from)}|${esc(t.to)}|${t.amt}">Record payment</button>${(() => { const f = owesFor(t.from, t.to); return f.length ? `<div class="owe-for">For: ${f.join(" · ")}</div>` : ""; })()}${t.from === ME.email && payLinks(t) ? `<div class="pay-row">Pay ${esc(nameOf(t.to))}: ${payLinks(t)}</div>` : ""}</div>`).join("")}</div>` : `<p class="hint">Everyone's even.</p>`}
       <div style="display:grid;gap:4px">${members().map(e => `<div class="bal">${avatar(e)}<span>${esc(nameOf(e))}</span><b style="color:${bal[e] > 0.005 ? "var(--leaf)" : bal[e] < -0.005 ? "var(--accent)" : "var(--muted)"}">${bal[e] > 0.005 ? "gets back " : bal[e] < -0.005 ? "owes " : ""}${money(Math.abs(bal[e]), { cents: true })}</b></div>`).join("")}</div></div>` : `<p class="hint">Invite people with <b>Share</b> to split costs between you.</p>`}
     ${Object.keys(byCat).length ? `<div class="card" style="display:grid;gap:10px"><h3>By category</h3><div class="bars">${CATS.filter(c => byCat[c]).map(c => `<div class="bar"><span>${c}</span><span class="track"><i style="width:${byCat[c].s / maxC * 100}%;background:var(--accent)"></i><i style="width:${byCat[c].p / maxC * 100}%;background:var(--accent-soft)"></i></span><b>${money(byCat[c].s + byCat[c].p)}</b></div>`).join("")}</div><p class="hint"><span style="color:var(--accent)">■</span> spent · <span style="color:var(--accent-soft)">■</span> planned</p></div>` : ""}
     <div class="card"><h3 style="margin-bottom:6px">All costs</h3>${items.length ? `<table class="tbl"><thead><tr><th>Date</th><th>What</th><th>Paid by</th><th class="num">Amount</th></tr></thead><tbody>
-      ${items.map(x => `<tr class="${x.planned ? "planned" : ""}" data-src="${x.src}" data-id="${x.id}" style="cursor:pointer"><td>${esc(fmtD(x.date) || "—")}</td><td>${x.kind === "payment" ? `<b>${esc(nameOf(x.paidBy))}</b> paid <b>${esc(nameOf(x.to))}</b>` : esc(x.desc || "")}<br><span class="hint" style="font-size:11.5px">${x.kind === "payment" ? "Settle up" : esc(x.category || "")}${x.src === "booking" ? " · booking" : ""}${x.planned ? " · estimate" : ""}</span></td><td>${x.paidBy ? esc(nameOf(x.paidBy)) : "—"}</td><td class="num">${x.cur !== homeCur() ? `<span class="hint" style="display:block;font-size:11.5px">${fmtCur(x.orig, x.cur, x.orig % 1 !== 0)}</span>` : ""}<b>${x.noRate ? "needs rate" : (x.approx ? "~" : "") + money(x.amount, { cents: x.amount % 1 !== 0 })}</b></td></tr>`).join("")}</tbody></table>` : `<div class="empty">No costs yet. Add expenses as you go, or add costs to your bookings.</div>`}</div>`;
+      ${items.map(x => `<tr class="${x.planned ? "planned" : ""}" data-src="${x.src}" data-id="${x.id}" style="cursor:pointer"><td>${esc(fmtD(x.date) || "—")}</td><td>${x.kind === "payment" ? `<b>${esc(nameOf(x.paidBy))}</b> paid <b>${esc(nameOf(x.to))}</b>` : esc(x.desc || "")}<br><span class="hint" style="font-size:11.5px">${x.kind === "payment" ? (x.for?.length ? "For " + esc(x.for.map(id => items.find(i => i.id === id)?.desc).filter(Boolean).join(", ")) : "Settle up") + (x.note ? " · " + esc(x.note) : "") : esc(x.category || "")}${x.src === "booking" ? " · booking" : ""}${x.planned ? " · estimate" : ""}</span>${x.kind !== "payment" && !x.planned && n > 1 ? `<span class="pbs">${statusOf(x)}</span>` : ""}</td><td>${x.paidBy ? esc(nameOf(x.paidBy)) : "—"}</td><td class="num">${x.cur !== homeCur() ? `<span class="hint" style="display:block;font-size:11.5px">${fmtCur(x.orig, x.cur, x.orig % 1 !== 0)}</span>` : ""}<b>${x.noRate ? "needs rate" : (x.approx ? "~" : "") + money(x.amount, { cents: x.amount % 1 !== 0 })}</b></td></tr>`).join("")}</tbody></table>` : `<div class="empty">No costs yet. Add expenses as you go, or add costs to your bookings.</div>`}</div>`;
   $("#addExp").onclick = () => expenseModal(null);
+  $("#addPay") && ($("#addPay").onclick = () => settleModal(members().find(e => e !== ME.email) || ME.email, ME.email, 0));
   $("#payMe") && ($("#payMe").onclick = payModal);
   $("#setBudget").onclick = () => { location.hash = `#/t/${cur.id}/overview`; setTimeout(() => $("#ovBudget")?.focus(), 80); };
   v.addEventListener("click", e => {
     const s = e.target.closest("[data-settle]");
-    if (s) { const [from, to, amt] = s.dataset.settle.split("|"); const id = uidGen(); T.expenses[id] = { kind: "payment", paidBy: from, to, amount: +amt, desc: "Settle up", category: "Other", date: isoOf(new Date()), created: Date.now(), split: [] }; save(tp("expenses/" + id), T.expenses[id], 0); renderTrip(); toast(`Recorded: ${esc(nameOf(from))} paid ${esc(nameOf(to))} ${money(+amt, { cents: true })}.`); return; }
+    if (s) { const [from, to, amt] = s.dataset.settle.split("|"); return settleModal(from, to, +amt); }
     const r = e.target.closest("tr[data-src]"); if (!r) return;
     if (r.dataset.src === "booking") bookingModal(r.dataset.id); else expenseModal(r.dataset.id);
+  });
+}
+function settleModal(from, to, amt, id) {
+  const x = id ? T.expenses[id] : null;
+  if (x) { from = x.paidBy; to = x.to; amt = num(x.amount); }
+  let sel = new Set(x?.for || []), touched = !!x;
+  openModal(`<div class="row between"><h2>${x ? "Payment" : "Record a payment"}</h2><button class="iconbtn" type="button" data-close aria-label="Close">×</button></div>
+    <div class="grid2"><label class="field" for="stFrom">Who paid<select id="stFrom">${members().map(e => `<option value="${esc(e)}" ${e === from ? "selected" : ""}>${esc(nameOf(e))}</option>`).join("")}</select></label>
+      <label class="field" for="stTo">Paid to<select id="stTo">${members().map(e => `<option value="${esc(e)}" ${e === to ? "selected" : ""}>${esc(nameOf(e))}</option>`).join("")}</select></label></div>
+    <div class="field"><span>What it's for</span><div id="stFor" class="st-for"></div></div>
+    <div class="grid2"><label class="field" for="stAmt">Amount paid<input id="stAmt" type="number" min="0" step="0.01" value="${amt ? Math.round(amt * 100) / 100 : ""}" placeholder="0.00"></label>
+      <label class="field" for="stDate">Date<input id="stDate" type="date" value="${esc(x?.date || isoOf(new Date()))}"></label></div>
+    <label class="field" for="stNote">Note<input id="stNote" maxlength="60" value="${esc(x?.note || "")}" placeholder="Venmo, cash…"></label>
+    <p class="hint" id="stMsg" role="status"></p>
+    <div class="row between">${x ? `<button class="btn danger" type="button" id="stDel">Delete</button>` : "<span></span>"}<div class="row"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn accent" type="button" id="stSave">Save</button></div></div>`, m => {
+    $$("[data-close]", m).forEach(b => b.onclick = closeModal);
+    let armed = false;
+    // what's still owed between these two, as if this payment weren't recorded yet
+    const others = spendItems().filter(i => i.id !== id), PB = paidBack(others);
+    const paint = () => {
+      const f = $("#stFrom").value, t = $("#stTo").value, list = Object.entries(PB.owed).filter(([k, o]) => o.e === f && o.x.paidBy === t && (PB.rem(k) > 0.005 || sel.has(o.x.id)));
+      $("#stFor").innerHTML = f === t ? `<p class="hint">Pick two different people.</p>` : list.length
+        ? list.map(([k, o]) => `<label class="st-item"><input type="checkbox" data-for="${esc(o.x.id)}" data-rem="${PB.rem(k)}" ${sel.has(o.x.id) ? "checked" : ""}><span class="grow"><b>${esc(o.x.desc || "Cost")}</b><span class="hint">${esc(fmtD(o.x.date) || "")}${PB.paid[k] ? ` · ${money(PB.paid[k], { cents: true })} already paid` : ""}</span></span><b>${money(PB.rem(k), { cents: true })}</b></label>`).join("") + `<p class="hint">Tick what this payment covers. The amount fills in, and you can lower it for a partial payment.</p>`
+        : `<p class="hint">${esc(nameOf(f))} doesn't owe ${esc(nameOf(t))} for anything right now. You can still record a payment.</p>`;
+    };
+    const sum = () => $$("[data-for]", m).filter(c => c.checked).reduce((a, c) => a + +c.dataset.rem, 0);
+    $("#stFor").addEventListener("change", e => { const c = e.target.closest("[data-for]"); if (!c) return; c.checked ? sel.add(c.dataset.for) : sel.delete(c.dataset.for); const v = sum(); if (v) $("#stAmt").value = Math.round(v * 100) / 100; touched = true; });
+    ["#stFrom", "#stTo"].forEach(q => $(q).onchange = () => { sel = new Set(); paint(); });
+    paint();
+    if (!x && amt) { const boxes = $$("[data-for]", m), tot = sum.call(null) || 0; let left = amt;   // from "Record payment": tick what that amount covers
+      boxes.forEach(c => { if (left > 0.005 && +c.dataset.rem <= left + 0.005) { c.checked = true; sel.add(c.dataset.for); left -= +c.dataset.rem; } }); }
+    if (x) $("#stDel").onclick = () => { if (!armed) { armed = true; $("#stDel").textContent = "Tap again to delete"; return; } delete T.expenses[id]; remove(tp("expenses/" + id)); closeModal(); renderTrip(); };
+    $("#stSave").onclick = () => {
+      const f = $("#stFrom").value, t = $("#stTo").value, a = num($("#stAmt").value);
+      if (f === t) { $("#stMsg").textContent = "Pick two different people."; return; }
+      if (!a) { $("#stMsg").textContent = "Enter how much was paid."; $("#stAmt").focus(); return; }
+      const pid = id || uidGen(), forIds = $$("[data-for]", m).filter(c => c.checked).map(c => c.dataset.for);
+      T.expenses[pid] = { kind: "payment", paidBy: f, to: t, amount: a, currency: homeCur(), rate: 1, home: homeCur(), desc: "Settle up", category: "Other", date: validIso($("#stDate").value) ? $("#stDate").value : isoOf(new Date()), note: $("#stNote").value.trim().slice(0, 60), for: forIds, created: x?.created || Date.now(), split: [] };
+      save(tp("expenses/" + pid), T.expenses[pid], 0); closeModal(); renderTrip();
+      toast(`Recorded: ${esc(nameOf(f))} paid ${esc(nameOf(t))} ${money(a, { cents: true })}.`);
+    };
   });
 }
 function expenseModal(id) {
   const x = id ? T.expenses[id] : { paidBy: ME.email, split: members(), date: isoOf(new Date()), category: "Food & drink" };
   let armed = false;
+  if (x.kind === "payment") return settleModal(null, null, 0, id);
   if (x.kind === "payment") {
     openModal(`<div class="row between"><h2>Settle-up payment</h2><button class="iconbtn" type="button" data-close aria-label="Close">×</button></div><p>${esc(nameOf(x.paidBy))} paid ${esc(nameOf(x.to))} <b>${money(num(x.amount), { cents: true })}</b> on ${esc(fmtD(x.date))}.</p><div class="row between"><button class="btn danger" type="button" id="exDel">Delete</button><button class="btn ghost" type="button" data-close>Close</button></div>`, m => {
       $$("[data-close]", m).forEach(b => b.onclick = closeModal);
