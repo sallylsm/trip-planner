@@ -9,7 +9,8 @@ const auth = getAuth(app);
 const fs = initializeFirestore(app, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 const UNSPLASH_KEY = String(CFG.unsplashKey || "").trim();
 const FLIGHT_KEY = String(CFG.flightStatusKey || "").trim();
-const GKEY = String(CFG.googleMapsKey || "").trim();   // optional Google Maps Platform key: Google map, search and nearby places   // optional AeroDataBox key (RapidAPI) for live flight status
+const GKEY = String(CFG.googleMapsKey || "").trim();
+const PUSH_KEY = String(CFG.pushKey || "").trim();   // public key for lock-screen notifications (see Help → Notifications)   // optional Google Maps Platform key: Google map, search and nearby places   // optional AeroDataBox key (RapidAPI) for live flight status
 
 // ---------------------------------------------------------------- helpers
 const $ = (s, el = document) => el.querySelector(s);
@@ -177,6 +178,8 @@ $("#meBtn").addEventListener("click", e => { e.stopPropagation(); Object.keys(FO
 document.addEventListener("click", () => { $("#mePop").hidden = true; $("#meBtn").setAttribute("aria-expanded", "false"); });
 darkMQ.addEventListener?.("change", applyTheme);
 $("#signOut").addEventListener("click", () => signOut(auth));
+$("#signOut").insertAdjacentHTML("beforebegin", `<button class="btn ghost small" id="pushBtn" type="button">🔔 Notifications</button>`);
+$("#pushBtn").addEventListener("click", () => { $("#mePop").hidden = true; pushModal(); });
 
 // ---------------------------------------------------------------- people
 const members = () => (T.trip?.members || []).map(e => e.toLowerCase());
@@ -554,7 +557,7 @@ onAuthStateChanged(auth, async user => {
   if (!user) { ME = null; unsubHome?.(); leaveTrip(); if (shareToken()) renderShare(shareToken()); else renderGate(); return; }
   ME = { uid: user.uid, email: (user.email || "").toLowerCase(), name: (user.displayName || "").split(" ")[0] || (user.email || "").split("@")[0], gphoto: user.photoURL || "", gname: user.displayName || "" };
   $("#meBtn").hidden = false; $("#meAv").textContent = ME.name.charAt(0).toUpperCase(); $("#meName").textContent = user.displayName || ME.name; $("#meEmail").textContent = ME.email;
-  subscribeHome(); subscribeLoyalty(); subscribeAccess(); subscribeProfile(); subscribeSomeday(); route();
+  subscribeHome(); subscribeLoyalty(); subscribeAccess(); subscribeProfile(); subscribeSomeday(); route(); setTimeout(refreshPush, 3000);
 });
 
 // ================================================================ ROUTING
@@ -650,7 +653,7 @@ function openTrip(id, tab) {
   $("#app").innerHTML = `<div class="trip layout-${layout}"><aside class="side" id="side" aria-label="Trip sections"></aside><div class="panel" id="panel"><div class="view"><p class="hint">Loading trip…</p></div></div><div class="mapwrap"><div id="map"></div><div class="map-days" id="mapDays" hidden></div></div></div><button class="btn accent mapbtn" id="mapToggle" type="button">Map</button>`;
   $("#mapToggle").onclick = () => { document.body.classList.toggle("show-map"); $("#mapToggle").textContent = document.body.classList.contains("show-map") ? "List" : "Map"; map?.invalidateSize(); };
   initMap();
-  const rerender = debounce(() => { if (cur?.id === id) { renderTrip(true); renderMap("data"); pushShare(); } }, 60);
+  const rerender = debounce(() => { if (cur?.id === id) { renderTrip(true); renderMap("data"); pushShare(); syncTripTz(); } }, 60);
   cur.unsubs.push(onSnapshot(doc(fs, "trips/" + id), s => {
     if (!s.exists()) { $("#panel").innerHTML = `<div class="view"><p class="banner">This trip doesn't exist anymore, or you're no longer a member.</p><a href="#/">Back to your trips</a></div>`; return; }
     T.trip = { ...s.data() };
@@ -1620,7 +1623,9 @@ async function refreshStatus(key, quiet) {
   catch (e) { STATUS[key] = { err: e.message }; if (!quiet) toast(esc(e.message)); }
   if (cur?.tab === "bookings") renderTrip();
 }
-function notify(title, body) {
+const pushOn = () => { try { return !!localStorage.getItem("trips-push"); } catch { return false; } };
+function notify(title, body, covered = false) {
+  if (covered && pushOn()) { toast(`<b>${esc(title)}</b> ${esc(body)}`); return; }   // the server sends this one to the lock screen
   if (!("Notification" in window) || Notification.permission !== "granted") { toast(`<b>${esc(title)}</b> ${esc(body)}`); return; }
   navigator.serviceWorker?.getRegistration().then(r => r ? r.showNotification(title, { body, icon: "icon-192.png", tag: title }) : new Notification(title, { body })).catch(() => new Notification(title, { body }));
 }
@@ -2015,6 +2020,9 @@ const HELP = [
     <li>The first time, Google says it hasn't verified the app. That's expected for a personal app: click <b>Advanced → Go to …</b> and tick the box to allow reading email.</li></ol>`],
   ["budget", "Budget and money", `<p>Log what you spend in any currency. Wayfinder converts it to the trip's home currency with that day's exchange rate, splits it between the people you pick, and works out who owes whom. Bookings with a cost count too. For a hotel or other stay, untick the nights someone isn't there under <b>Who's staying which nights</b>: each night's cost is split between whoever is staying that night.</p><p> To settle up, add how people can pay you (Venmo, PayPal, Cash App or Zelle). Whoever owes gets a pay button with the amount filled in.</p><p>When someone pays you back, tap <b>Record payment</b>, tick what it was for (the concert tickets, the hotel), and lower the amount if they only paid part. Each cost in <b>All costs</b> shows who's paid back and who still owes, and <b>Who owes whom</b> lists what each amount is for.</p>`],
   ["lists", "To-do and packing", `<p><b>To-do</b> is shared: assign tasks and set due dates. <b>Packing</b> is private: everyone on the trip has their own list. <b>Suggested for this trip</b> at the top of Packing adds things the weather and destinations call for, like an umbrella when rain is likely or the right plug adapter.</p>`],
+  ["push", "Notifications", `<p>Wayfinder can send alerts to your lock screen even when it's closed: check-in opening, the last day to cancel, things to book, when to leave for a stop, and theme park alerts (waits dropping, Lightning Lanes, showtimes).</p>
+    <p><b>On each phone:</b> on iPhone, open Wayfinder in Safari, tap <b>Share → Add to Home Screen</b>, and open it from the new icon (iOS 16.4 or newer). Then tap your picture → <b>🔔 Notifications</b>, turn them on and tap <b>Allow</b>. Tap <b>Send a test notification</b> to check.</p>
+    <p><b>One-time setup (whoever runs the site):</b> a small program on Firebase sends the alerts. It's set up once from Google Cloud Shell, and the steps came with the setup files. Without it, alerts only show while Wayfinder is open on screen.</p>`],
   ["wallet", "Ticket wallet", `<p>On any booking, tap <b>🎫 Tickets</b> to add boarding passes, park tickets, concert e-tickets or confirmation screenshots (photos, or PDFs up to 700 KB). Everyone on the trip can open them, and they work without signal once Wayfinder has loaded the trip. On the day, <b>Today</b> shows that day's tickets at the top. Turn your screen brightness up when you scan one.</p>`],
   ["leave", "Leave by and tight days", `<p>Give stops a time and <b>Today</b> tells you when to leave for the next one, counting the travel time from the stop before (or from where you are, if you tap <b>Use where I am</b>). While Wayfinder is open you get an alert 10 minutes before you need to go, and when it's time.</p>
     <p>In the <b>Itinerary</b>, stops with times show ⚠ when there isn't enough time to get there, and ⏱ when you'd only have a few minutes at the stop before.</p>`],
@@ -2157,6 +2165,67 @@ function hoursNote(p, iso) {
   return { cls: "ok", txt: `Open ${txt}` };
 }
 const hoursBadge = (p, iso) => { const n = hoursNote(p, iso); return n ? `<span class="hrs ${n.cls}" title="Regular opening hours from Google. Holidays may differ.">${n.cls === "bad" ? "⚠ " : n.cls === "warn" ? "⏰ " : ""}${esc(n.txt)}</span>` : ""; };
+
+// ================================================================ LOCK-SCREEN NOTIFICATIONS (web push)
+// The phone subscribes here; a small program on Firebase checks trips every 5 minutes and sends the alerts.
+const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const devId = () => { let d = localStorage.getItem("trips-dev"); if (!d) { d = uidGen() + uidGen(); try { localStorage.setItem("trips-dev", d); } catch {} } return d; };
+const b64u = s => { const p = "=".repeat((4 - s.length % 4) % 4), raw = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(raw, c => c.charCodeAt(0)); };
+const PUSH_CATS = [["remind", "Trip reminders", "Check-in opening, last day to cancel, things to book, Disney dining windows"], ["leave", "Leave by", "10 minutes before you need to leave for a stop with a time"], ["parks", "Theme parks", "Wait times dropping, Lightning Lane bookings and return times, showtimes"]];
+async function pushModal() {
+  const ok = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const reg = ok ? await Promise.race([navigator.serviceWorker.ready, new Promise(r => setTimeout(() => r(null), 3000))]).catch(() => null) : null, sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  const dref = doc(fs, `users/${ME.uid}/push/${devId()}`), saved = sub ? await getDoc(dref).then(s => s.data()).catch(() => null) : null, cats = saved?.cats || { remind: true, leave: true, parks: true };
+  const on = !!(sub && saved);
+  let body;
+  if (!PUSH_KEY) body = `<p>Lock-screen notifications need a one-time setup on Firebase first. The steps are in <a href="#/help/push">Help → Notifications</a>.</p>`;
+  else if (isIOS() && !standalone()) body = `<p>On iPhone, notifications only work from the Home Screen app.</p><ol><li>In Safari, tap <b>Share</b> → <b>Add to Home Screen</b>.</li><li>Open Wayfinder from the new icon on your Home Screen.</li><li>Come back here and turn notifications on.</li></ol>`;
+  else if (!ok || !reg) body = `<p>This browser can't receive notifications. On iPhone, update to iOS 16.4 or newer and use the Home Screen app.</p>`;
+  else if (Notification.permission === "denied") body = `<p>Notifications are blocked for Wayfinder. Turn them on in <b>Settings → Notifications → Wayfinder</b> (iPhone) or your browser's site settings, then come back.</p>`;
+  else body = `<p class="hint">Alerts arrive on your lock screen even when Wayfinder is closed. Each phone turns them on separately.</p>
+    <label class="row between pf-row" style="gap:8px"><b>Notifications on this phone</b><span class="switch"><input type="checkbox" id="pushOn" ${on ? "checked" : ""}><span>${on ? "On" : "Off"}</span></span></label>
+    <div class="ics-opts" ${on ? "" : "hidden"} id="pushCats">${PUSH_CATS.map(([k, l, d]) => `<label class="ics-opt"><input type="checkbox" data-pcat="${k}" ${cats[k] !== false ? "checked" : ""}><span><b>${l}</b><span class="hint">${d}</span></span></label>`).join("")}</div>
+    ${on ? `<button class="btn small" type="button" id="pushTest">Send a test notification</button>` : ""}
+    <p class="hint">You get alerts for every trip you're on. Flight changes still need Wayfinder open.</p>`;
+  openModal(`<div class="row between"><h2>🔔 Notifications</h2><button class="iconbtn" type="button" data-close aria-label="Close">×</button></div>${body}<p class="hint" id="pushMsg" role="status"></p>`, m => {
+    $$("[data-close]", m).forEach(x => x.onclick = closeModal);
+    const msg = t => { $("#pushMsg").textContent = t; };
+    $("#pushOn") && ($("#pushOn").onchange = async e => {
+      try {
+        if (e.target.checked) {
+          if (await Notification.requestPermission() !== "granted") { e.target.checked = false; msg("Notifications weren't allowed. You can allow them in your phone's settings."); return; }
+          const s = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(PUSH_KEY) });
+          await setDoc(dref, { email: ME.email, sub: JSON.parse(JSON.stringify(s)), cats, tz: Intl.DateTimeFormat().resolvedOptions().timeZone, ua: navigator.userAgent.slice(0, 120), created: Date.now() });
+          localStorage.setItem("trips-push", "1");
+        } else {
+          await (await reg.pushManager.getSubscription())?.unsubscribe().catch(() => {}); await deleteDoc(dref).catch(() => {}); localStorage.removeItem("trips-push");
+        }
+        pushModal();
+      } catch (err) { console.warn(err); e.target.checked = !e.target.checked; msg("Couldn't change notifications: " + (err.message || "try again")); }
+    });
+    $$("[data-pcat]", m).forEach(c => c.onchange = () => { cats[c.dataset.pcat] = c.checked; updateDoc(dref, { cats }).catch(fail); });
+    $("#pushTest") && ($("#pushTest").onclick = async () => { await updateDoc(dref, { testAt: Date.now() }).catch(fail); msg("Sent. It arrives within 5 minutes. Lock your phone to see it on the lock screen."); });
+  });
+}
+// keep the phone's subscription and time zone fresh (Apple renews them now and then)
+async function refreshPush() {
+  if (!ME || !PUSH_KEY || !pushOn() || !("serviceWorker" in navigator)) return;
+  try { const reg = await navigator.serviceWorker.ready, s = await reg.pushManager.getSubscription();
+    if (!s) { localStorage.removeItem("trips-push"); return; }
+    await setDoc(doc(fs, `users/${ME.uid}/push/${devId()}`), { email: ME.email, sub: JSON.parse(JSON.stringify(s)), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, seen: Date.now() }, { merge: true }); } catch {}
+}
+// the server needs each day's local time zone to know when "10:00" is
+function syncTripTz() {
+  if (!cur || !T.trip || !members().includes(ME?.email)) return;
+  const days = tripDays(); if (!days.length) return;
+  const map = {}; let all = true;
+  for (const iso of days) { const tz = tzAt(tripTzPoint(iso)); if (tz) map[iso] = tz; else all = false; }
+  if (!all) return;
+  const main = map[days[0]], same = days.every(d => map[d] === main), want = same ? null : map;
+  if (T.trip.tz === main && JSON.stringify(T.trip.tzDays || null) === JSON.stringify(want)) return;
+  T.trip.tz = main; T.trip.tzDays = want; updateDoc(doc(fs, "trips/" + cur.id), { tz: main, tzDays: want }).catch(() => {});
+}
 
 // ================================================================ TICKET WALLET
 // Boarding passes, park tickets, e-tickets and confirmations, kept with each booking. Saved in the trip, so they open offline once loaded.
@@ -2364,7 +2433,7 @@ function checkReminders() {
   for (const r of reminders()) {
     const key = `${cur.id}|${r.id}|${r.kind}|${+r.at}`, dt = r.at - Date.now();
     const due = r.kind === "checkin" || r.kind === "book" ? dt <= 0 && dt > -(r.kind === "book" ? 15 : 6) * 36e5 : dt > 0 && dt < 24 * 36e5;
-    if (due && !seen[key]) { seen[key] = 1; notify(r.kind === "checkin" ? "Check-in is open" : r.kind === "book" ? "Book today" : "Free cancellation ends soon", r.txt); }
+    if (due && !seen[key]) { seen[key] = 1; notify(r.kind === "checkin" ? "Check-in is open" : r.kind === "book" ? "Book today" : "Free cancellation ends soon", r.txt, true); }
   }
   try { localStorage.setItem("trips-rem", JSON.stringify(seen)); } catch {}
 }
@@ -3300,7 +3369,7 @@ function wireParkExtras(iso, pid) {
 }
 // ---- on the day: alerts for waits, Lightning Lane bookings and return times (while Wayfinder is open)
 const tpSeen = (() => { try { return JSON.parse(sessionStorage.getItem("tp-seen") || "{}"); } catch { return {}; } })();
-const tpOnce = (k, title, body) => { if (tpSeen[k]) return; tpSeen[k] = 1; try { sessionStorage.setItem("tp-seen", JSON.stringify(tpSeen)); } catch {} notify(title, body); };
+const tpOnce = (k, title, body) => { if (tpSeen[k]) return; tpSeen[k] = 1; try { sessionStorage.setItem("tp-seen", JSON.stringify(tpSeen)); } catch {} notify(title, body, true); };
 let tpTick = 0;
 setInterval(async () => {
   if (!cur || !T.trip) return;
