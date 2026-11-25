@@ -1,6 +1,7 @@
 // Offline support for Trips: keeps the app, its fonts, the map library and Firebase code on the device.
 // Bump VERSION when you upload new files so phones pick up the change.
-const VERSION = "trips-v25";
+const VERSION = "trips-v26";
+const TILES = "wayfinder-tiles";   // saved maps; kept across app updates
 const SHELL = ["./", "index.html", "app.js", "style.css", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "logo.png", "countries.json", "config.js", "airports.json"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => {
@@ -11,7 +12,15 @@ self.addEventListener("fetch", e => {
   const url = new URL(req.url);
   const own = url.origin === location.origin;
   const lib = ["www.gstatic.com", "fonts.gstatic.com", "fonts.googleapis.com", "cdnjs.cloudflare.com", "unpkg.com"].includes(url.hostname);
-  if (!own && !lib) return;   // live data, search, photos and map tiles go straight to the network
+  // the free map: styles change now and then (network first); tiles, fonts and icons are kept (cache first) so saved maps work offline
+  if (url.hostname === "tiles.openfreemap.org") {
+    const fresh = url.pathname.startsWith("/styles/") || /^\/planet\/?$/.test(url.pathname);
+    e.respondWith(caches.open(TILES).then(c => fresh
+      ? fetch(req).then(res => { if (res.ok) c.put(req, res.clone()); return res; }).catch(() => c.match(req).then(r => r || Response.error()))
+      : c.match(req).then(r => r || fetch(req).then(res => { if (res.ok) c.put(req, res.clone()); return res; }))));
+    return;
+  }
+  if (!own && !lib) return;   // live data, search, photos and other map tiles go straight to the network
   if (own) {
     e.respondWith(fetch(req).then(res => { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); return res; })
       .catch(() => caches.match(req).then(r => r || caches.match("index.html"))));

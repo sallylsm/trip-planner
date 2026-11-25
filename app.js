@@ -109,7 +109,7 @@ let ME = null;             // { uid, email, name }
 let TRIPS = {};            // id -> trip doc
 let unsubHome = null;
 let cur = null;            // { id, tab, unsubs: [] }
-const T = { trip: null, places: {}, days: {}, bookings: {}, expenses: {}, checklist: {}, photos: {}, notes: {}, polls: {}, packing: null };
+const T = { trip: null, places: {}, days: {}, bookings: {}, expenses: {}, checklist: {}, photos: {}, notes: {}, polls: {}, tickets: {}, packing: null };
 const latest = {}, timers = {}, chains = {};
 let oldEurope = null;      // set when the old Europe 2029 data can be read
 
@@ -554,7 +554,7 @@ onAuthStateChanged(auth, async user => {
   if (!user) { ME = null; unsubHome?.(); leaveTrip(); if (shareToken()) renderShare(shareToken()); else renderGate(); return; }
   ME = { uid: user.uid, email: (user.email || "").toLowerCase(), name: (user.displayName || "").split(" ")[0] || (user.email || "").split("@")[0], gphoto: user.photoURL || "", gname: user.displayName || "" };
   $("#meBtn").hidden = false; $("#meAv").textContent = ME.name.charAt(0).toUpperCase(); $("#meName").textContent = user.displayName || ME.name; $("#meEmail").textContent = ME.email;
-  subscribeHome(); subscribeLoyalty(); subscribeAccess(); subscribeProfile(); route();
+  subscribeHome(); subscribeLoyalty(); subscribeAccess(); subscribeProfile(); subscribeSomeday(); route();
 });
 
 // ================================================================ ROUTING
@@ -564,6 +564,8 @@ function route() {
   if (!ME) { if (auth.currentUser === null) renderGate(); return; }
   const m = location.hash.match(/^#\/t\/([\w-]+)(?:\/(\w+))?/);
   if (location.hash.startsWith("#/help")) { leaveTrip(); renderHelp(); return; }
+  if (location.hash.startsWith("#/someday")) { leaveTrip(); renderSomeday(); return; }
+  if (location.hash.startsWith("#/stats")) { leaveTrip(); renderStats(); return; }
   if (m) openTrip(m[1], m[2] || (TRIPS[m[1]] && tripDaysOf(TRIPS[m[1]]).includes(isoOf(new Date())) ? "today" : "plan"));
   else { leaveTrip(); renderHome(); }
 }
@@ -593,6 +595,7 @@ function renderHome(err) {
     ${(() => { try { return !localStorage.getItem("trips-seen-help"); } catch { return false; } })() ? `<div class="card row between help-cta"><div><b>New here?</b><p class="hint">Take a two-minute tour of what the planner can do.</p></div><a class="btn accent small" href="#/help">Open the guide</a></div>` : ""}
     ${err ? `<p class="banner">Couldn't load your trips. ${err.code === "permission-denied" ? "The database rules need updating (see the README)." : "Check your connection."}</p>` : ""}
     ${oldEurope && !imported ? `<div class="card row between"><div><b>Bring Europe 2029 in</b><p class="hint">Copies the route, spots, flights and costs, day notes, photos and to-dos from the Europe 2029 site into a trip here. The old site stays as it is.</p></div><button class="btn" id="importEu" type="button">Import Europe 2029</button></div>` : ""}
+    <div class="home-links"><a class="card home-link" href="#/someday"><b>⭐ Someday list</b><span class="hint">${SOMEDAY.length ? `${SOMEDAY.length} place${SOMEDAY.length === 1 ? "" : "s"} saved for future trips` : "Save places for a future trip"}</span></a><a class="card home-link" href="#/stats"><b>🌍 Your travels</b><span class="hint">Map of your trips, countries and miles flown</span></a></div>
     <div class="trip-grid">
       ${list.map(([id, t]) => `<a class="trip-card" href="#/t/${id}">
         <div class="trip-cover">${t.cover ? `<img src="${esc(t.cover)}" alt="">` : `<span class="letter">${esc((t.name || "?").charAt(0))}</span>`}<span class="when">${esc(tripWhen(t))}</span></div>
@@ -633,7 +636,7 @@ function newTripModal() {
 }
 
 // ================================================================ TRIP VIEW
-const TABS = [["today", "Today"], ["overview", "Overview"], ["explore", "Explore"], ["notes", "Notes"], ["places", "Places"], ["plan", "Itinerary"], ["bookings", "Bookings"], ["food", "Restaurants"], ["budget", "Budget"], ["todo", "To-do"], ["packing", "Packing"], ["album", "Photos"], ["guide", "Country guide"], ["parks", "Theme parks"]];
+const TABS = [["today", "Today"], ["overview", "Overview"], ["explore", "Explore"], ["notes", "Notes"], ["places", "Places"], ["plan", "Itinerary"], ["bookings", "Bookings"], ["food", "Restaurants"], ["budget", "Budget"], ["todo", "To-do"], ["packing", "Packing"], ["album", "Photos"], ["guide", "Country guide"], ["sos", "Emergency card"], ["parks", "Theme parks"]];
 function leaveTrip() {
   if (!cur) return;
   cur.unsubs.forEach(u => u()); cur = null;
@@ -656,7 +659,7 @@ function openTrip(id, tab) {
     rerender();
   }, e => { $("#panel").innerHTML = `<div class="view"><p class="banner">${e.code === "permission-denied" ? `This trip hasn't been shared with <b>${esc(ME?.email || "")}</b>. Ask the person who planned it to add this exact email under <b>Share</b>, or sign in with the Google account they invited.` : "Couldn't load this trip. Check your connection and try again."}</p>${e.code === "permission-denied" ? `<button class="btn small" type="button" id="switchAcct">Sign in with a different Google account</button> ` : ""}<a href="#/">Back to your trips</a></div>`; $("#switchAcct") && ($("#switchAcct").onclick = () => signOut(auth)); }));
   cur.unsubs.push(onSnapshot(doc(fs, `users/${ME.uid}/packing/${id}`), s => { if (!latest[`users/${ME.uid}/packing/${id}`]) { T.packing = s.exists() ? { ...s.data() } : { empty: true }; rerender(); } }, () => { T.packing = { empty: true }; }));
-  for (const name of ["places", "days", "bookings", "expenses", "checklist", "photos", "notes", "polls"]) {
+  for (const name of ["places", "days", "bookings", "expenses", "checklist", "photos", "notes", "polls", "tickets"]) {
     cur.unsubs.push(onSnapshot(collection(fs, `trips/${id}/${name}`), snap => {
       const o = {}; snap.docs.forEach(d => { o[d.id] = { ...d.data() }; });
       for (const p of Object.keys(latest)) if (p.startsWith(`trips/${id}/${name}/`)) o[p.split("/").pop()] = latest[p];
@@ -681,7 +684,7 @@ function renderTrip(fromData = false) {
     <nav class="tabs" aria-label="Trip sections">${TABS.map(([k, l]) => `<a href="#/t/${cur.id}/${k}" ${cur.tab === k ? 'aria-current="page"' : ""}>${l}</a>`).join("")}</nav>
     <div class="view" id="view"></div>`;
   $("#inviteBtn").onclick = inviteModal; $("#calBtn").onclick = calendarModal;
-  ({ plan: viewPlan, places: viewPlaces, bookings: viewBookings, budget: viewBudget, notes: viewNotes, overview: viewOverview, explore: viewExplore, todo: viewTodo, packing: viewPacking, food: viewFood, today: viewToday, guide: viewGuide, parks: viewParks, album: viewAlbum }[cur.tab] || viewPlan)($("#view"));
+  ({ plan: viewPlan, places: viewPlaces, bookings: viewBookings, budget: viewBudget, notes: viewNotes, overview: viewOverview, explore: viewExplore, todo: viewTodo, packing: viewPacking, food: viewFood, today: viewToday, guide: viewGuide, parks: viewParks, album: viewAlbum, sos: viewSOS }[cur.tab] || viewPlan)($("#view"));
   if (cur.tab === "plan") { loadWeather(); loadHours(); }
   renderSide();
   if (scrollToDay && cur.tab === "plan") { const el = document.getElementById("day-" + scrollToDay); scrollToDay = null; if (el) { el.scrollIntoView({ block: "start", behavior: reduceMotion() ? "auto" : "smooth" }); return; } }
@@ -715,6 +718,7 @@ function renderSide() {
     ${item("todo", "To-do", "", todoOpen || "")}
     ${item("packing", "Packing", "", pk.total ? `${pk.done}/${pk.total}` : "")}
     ${item("album", "Photos", "", Object.keys(T.photos).length || "")}
+    ${item("sos", "Emergency card")}
     ${item("guide", "Country guide")}
     <a href="#/t/${cur.id}/print" class="side-item side-export ${tab === "print" ? "on" : ""}"><span>Export PDF</span></a>
   </nav>`;
@@ -870,7 +874,7 @@ function dayHtml(iso, i) {
       <textarea class="day-notes" id="dn-${iso}" data-notes="${iso}" placeholder="Notes for the day…" rows="${Math.min(8, Math.max(1, notes.split("\n").length))}">${esc(notes)}</textarea>
       ${items.length > 1 ? `<label class="mode-pick">Getting around <select id="md-${iso}" data-mode="${iso}" aria-label="How you'll get around on ${esc(dayLabel(iso))}">${DAY_MODES.map(([k, l]) => `<option value="${k}" ${k === mode ? "selected" : ""}>${l}</option>`).join("")}</select><span class="hint">Change any stretch below</span></label>` : ""}
       <ol class="stops" data-drop="${iso}">${dayItems(iso).map(x => x.k === "n" ? noteHtml(iso, x) : (() => { const p = x, k = items.findIndex(y => y.id === p.id); return `<li class="stop-wrap" data-id="${p.id}">
-          ${k && legs[k] != null ? `<div class="leg"><label class="leg-pick ${p.leg ? "set" : ""}" title="How you'll get to ${esc(p.name)}"><span aria-hidden="true">${MODE_IC[lm[k]]}</span><select data-leg="${p.id}" aria-label="How to get to ${esc(p.name)}"><option value="">${p.leg ? "Same as the day" : "Same as the day (" + esc(MODES[lm[k]].label.toLowerCase()) + ")"}</option>${Object.entries(MODES).map(([mk, m]) => `<option value="${mk}" ${p.leg === mk ? "selected" : ""}>${m.label}</option>`).join("")}</select></label><span>${esc(legText(legs[k], lm[k]))}</span></div>` : ""}
+          ${k && legs[k] != null ? `<div class="leg"><label class="leg-pick ${p.leg ? "set" : ""}" title="How you'll get to ${esc(p.name)}"><span aria-hidden="true">${MODE_IC[lm[k]]}</span><select data-leg="${p.id}" aria-label="How to get to ${esc(p.name)}"><option value="">${p.leg ? "Same as the day" : "Same as the day (" + esc(MODES[lm[k]].label.toLowerCase()) + ")"}</option>${Object.entries(MODES).map(([mk, m]) => `<option value="${mk}" ${p.leg === mk ? "selected" : ""}>${m.label}</option>`).join("")}</select></label><span>${esc(legText(legs[k], lm[k]))}</span>${tightTag(iso, items[k - 1], p, legs[k], lm[k])}</div>` : ""}
           <div class="stop" style="--tc:${TYPE[p.type].col}">
             <span class="grip" aria-hidden="true">⋮⋮</span><span class="num">${k + 1}</span>
             <span class="thumb">${photoSrcOf(p) ? `<img src="${esc(photoSrcOf(p))}" alt="" loading="lazy" draggable="false" onerror="this.remove()">` : esc(p.name.charAt(0))}</span>
@@ -1175,7 +1179,7 @@ function viewPlaces(v) {
     .sort((a, b) => Object.keys(b.hearts).length - Object.keys(a.hearts).length || (b.created || 0) - (a.created || 0));
   const count = f => { const m = {}; all.forEach(p => { const k = f(p); if (k) m[k] = (m[k] || 0) + 1; }); return Object.entries(m).sort((a, b) => a[0].localeCompare(b[0])); };
   const chips = (key, items) => `<div class="chips" data-f="${key}"><button type="button" class="chip ${!PF[key] ? "on" : ""}" data-v="">All</button>${items.map(([v, l, n]) => `<button type="button" class="chip ${PF[key] === v ? "on" : ""}" data-v="${esc(v)}">${esc(l)}<span class="n">${n}</span></button>`).join("")}</div>`;
-  v.innerHTML = `<div class="row between"><h2>Places</h2><button class="btn ghost small" type="button" id="fillPh" ${all.some(p => !photoSrcOf(p)) ? "" : "hidden"}>Find missing photos</button></div>
+  v.innerHTML = `<div class="row between"><h2>Places</h2><span class="row" style="gap:6px"><button class="btn ghost small" type="button" id="fromSomeday">⭐ From someday list</button><button class="btn ghost small" type="button" id="fillPh" ${all.some(p => !photoSrcOf(p)) ? "" : "hidden"}>Find missing photos</button></span></div>
     <div class="card" style="display:grid;gap:8px"><h3 style="color:var(--accent)">Add a place</h3>
       <div class="suggest-wrap"><input id="pq" autocomplete="off" placeholder="Search anywhere, e.g. Sagrada Família, a café, a beach…" role="combobox" aria-expanded="false" aria-controls="pql" data-live><ul class="suggest" id="pql" role="listbox" hidden></ul></div>
       <p class="hint">Picked places get their type, location, a Google Maps link and a photo when one is free to use. Can't find the right branch? Add the neighborhood or street, or paste a Google Maps link or coordinates (in Google Maps, press and hold the spot to copy them). <button class="linkbtn" type="button" id="manual">Add one by hand</button></p></div>
@@ -1197,6 +1201,7 @@ function viewPlaces(v) {
     },
   });
   $("#manual").onclick = () => placeModal(null);
+  $("#fromSomeday").onclick = somedayPickModal;
   $("#fillPh").onclick = fillPhotos;
   v.addEventListener("input", e => { if (e.target.id === "pfq") { PF.q = e.target.value; renderPlacesGridOnly(); } });
   v.addEventListener("click", e => {
@@ -1233,7 +1238,7 @@ function placeCard(p) {
         <select data-pday aria-label="Schedule ${esc(p.name)}">${dayOptions(tripDays().includes(p.day) ? p.day : "")}</select><span class="grow"></span>
         ${hasPt(p) ? `<button class="ext" type="button" data-locate style="border:0;background:none;cursor:pointer">Map</button>` : ""}
         ${link ? `<a class="ext" href="${esc(link)}" target="_blank" rel="noopener">${/google\.[a-z.]+\/maps/.test(link) ? "Maps ↗" : "Link ↗"}</a>` : ""}
-        ${cmtBtn(p)}<button class="ext" type="button" data-edit style="border:0;background:none;cursor:pointer">Edit</button></div></div></article>`;
+        ${cmtBtn(p)}<button class="ext" type="button" data-someday="${p.id}" style="border:0;background:none;cursor:pointer" title="Save to your someday list for a future trip">${SOMEDAY.some(y => somKey(y) === somKey(p)) ? "★" : "☆"}</button><button class="ext" type="button" data-edit style="border:0;background:none;cursor:pointer">Edit</button></div></div></article>`;
 }
 function flashPlace(id) { requestAnimationFrame(() => { const c = document.getElementById("pl-" + id); if (c) { c.scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" }); c.classList.add("flash"); setTimeout(() => c.classList.remove("flash"), 1400); } }); }
 async function fillPhotos() {
@@ -1370,7 +1375,7 @@ function bookingCard(id, b) {
   }
   if (k.group === "transport") body += statusHtml(id, b);
   const extra = reminderFacts(id) + loyaltyHtml(b); if (extra) body += `<div class="bk-extra">${extra}</div>`;
-  return `<article class="bk ${bkFocus === id ? "focus" : ""}" id="bk-${id}" style="--bc:${k.col}"><div class="bk-top"><div><div class="bk-kind">${esc(k.label)}</div><div class="bk-title">${esc(b.title || k.label)}</div></div><button class="btn ghost small" type="button" data-bedit="${id}">Edit</button></div>${body}${b.notes ? `<p class="hint">${esc(b.notes)}</p>` : ""}</article>`;
+  return `<article class="bk ${bkFocus === id ? "focus" : ""}" id="bk-${id}" style="--bc:${k.col}"><div class="bk-top"><div><div class="bk-kind">${esc(k.label)}</div><div class="bk-title">${esc(b.title || k.label)}</div></div><span class="row" style="gap:6px">${ticketBtn(id)}<button class="btn ghost small" type="button" data-bedit="${id}">Edit</button></span></div>${body}${b.notes ? `<p class="hint">${esc(b.notes)}</p>` : ""}</article>`;
 }
 function bookingModal(id, kind, prefill = {}) {
   const b = id ? T.bookings[id] : { kind, split: members(), ...prefill };
@@ -2010,6 +2015,15 @@ const HELP = [
     <li>The first time, Google says it hasn't verified the app. That's expected for a personal app: click <b>Advanced → Go to …</b> and tick the box to allow reading email.</li></ol>`],
   ["budget", "Budget and money", `<p>Log what you spend in any currency. Wayfinder converts it to the trip's home currency with that day's exchange rate, splits it between the people you pick, and works out who owes whom. Bookings with a cost count too. For a hotel or other stay, untick the nights someone isn't there under <b>Who's staying which nights</b>: each night's cost is split between whoever is staying that night.</p><p> To settle up, add how people can pay you (Venmo, PayPal, Cash App or Zelle). Whoever owes gets a pay button with the amount filled in.</p><p>When someone pays you back, tap <b>Record payment</b>, tick what it was for (the concert tickets, the hotel), and lower the amount if they only paid part. Each cost in <b>All costs</b> shows who's paid back and who still owes, and <b>Who owes whom</b> lists what each amount is for.</p>`],
   ["lists", "To-do and packing", `<p><b>To-do</b> is shared: assign tasks and set due dates. <b>Packing</b> is private: everyone on the trip has their own list. <b>Suggested for this trip</b> at the top of Packing adds things the weather and destinations call for, like an umbrella when rain is likely or the right plug adapter.</p>`],
+  ["wallet", "Ticket wallet", `<p>On any booking, tap <b>🎫 Tickets</b> to add boarding passes, park tickets, concert e-tickets or confirmation screenshots (photos, or PDFs up to 700 KB). Everyone on the trip can open them, and they work without signal once Wayfinder has loaded the trip. On the day, <b>Today</b> shows that day's tickets at the top. Turn your screen brightness up when you scan one.</p>`],
+  ["leave", "Leave by and tight days", `<p>Give stops a time and <b>Today</b> tells you when to leave for the next one, counting the travel time from the stop before (or from where you are, if you tap <b>Use where I am</b>). While Wayfinder is open you get an alert 10 minutes before you need to go, and when it's time.</p>
+    <p>In the <b>Itinerary</b>, stops with times show ⚠ when there isn't enough time to get there, and ⏱ when you'd only have a few minutes at the stop before.</p>`],
+  ["sos", "Emergency card", `<p>The <b>Emergency card</b> tab has the emergency numbers for each country on the trip, the U.S. embassy and State Department numbers, your travel insurance and contacts back home (tap to call), and <b>Show the driver</b>: your hotel's address big on the screen, in the local language when you're abroad. It's shared with everyone on the trip and opens without signal.</p>`],
+  ["offline", "Maps for offline", `<p>On <b>Overview</b>, tap <b>Save on this phone</b> under <b>Maps for offline</b> (best on Wi-Fi). It saves the map around every place and stay in the trip, so the map still works on the plane, the subway or abroad without data. Each person saves it on their own phone. Tap <b>Update</b> after adding new areas.</p>`],
+  ["dates", "Picking dates together", `<p>In <b>Notes & votes</b>, tap <b>+ Pick dates</b> and add a few date options. Everyone ticks every option that works for them, and the best one is starred. The trip's planner can tap <b>Use the best dates</b> to set them.</p>`],
+  ["someday", "Someday list and your travels", `<p>Tap ☆ on any place to save it to your <b>Someday list</b>, a private list of places for future trips (find it on Your trips). You can also search and save places there directly. When a trip comes together, open <b>Places → ⭐ From someday list</b> and add the ones nearby in one tap.</p>
+    <p><b>Your travels</b> (on Your trips) shows a map of all your trips and flights, with countries visited, miles flown and nights away.</p>`],
+  ["road", "Road trips", `<p>If a trip has a rental car (or you tap <b>Add a road trip helper</b> on Overview), Overview shows the drive between each of your stays, plus a gas and parking estimate from your car's mileage, the gas price and parking per night. Tap <b>Add to budget as estimates</b> to put them in the budget.</p>`],
   ["photos", "Photos and the family link", `<p><b>Photos</b> is a shared album: everyone on the trip can add photos (several at once), pick the day they belong to, add captions, and filter by day or person. Tap a photo to flip through them. They also go into the memory book.</p>
     <p><b>Family link</b> (in <b>Share</b>) makes a view-only page of the day-by-day plan, flights and where you're staying for family at home. They don't need to sign in. It leaves out costs, confirmation numbers, notes and photos, and turning it off deletes the page.</p>`],
   ["calendar", "Calendar and reminders", `<p><b>Add to calendar</b> (top of a trip) downloads a calendar file with your flights, check-ins, each day's plan and stops with times. Open it on your iPhone or Mac, or import it into Google Calendar. It includes alerts: 3 hours before a flight, when online check-in opens, and the day before free cancellation ends.</p>
@@ -2144,6 +2158,114 @@ function hoursNote(p, iso) {
 }
 const hoursBadge = (p, iso) => { const n = hoursNote(p, iso); return n ? `<span class="hrs ${n.cls}" title="Regular opening hours from Google. Holidays may differ.">${n.cls === "bad" ? "⚠ " : n.cls === "warn" ? "⏰ " : ""}${esc(n.txt)}</span>` : ""; };
 
+// ================================================================ TICKET WALLET
+// Boarding passes, park tickets, e-tickets and confirmations, kept with each booking. Saved in the trip, so they open offline once loaded.
+const ticketsOf = bid => Object.entries(T.tickets).filter(([, t]) => t.bid === bid).sort((a, b) => (a[1].created || 0) - (b[1].created || 0));
+const ticketBtn = bid => { const n = ticketsOf(bid).length; return `<button class="btn ${n ? "" : "ghost"} small tk-btn" type="button" data-tickets="${bid}" aria-label="Tickets for this booking">🎫${n ? " " + n : " Tickets"}</button>`; };
+document.addEventListener("click", e => { const b = e.target.closest("[data-tickets]"); if (b && cur) { e.preventDefault(); e.stopPropagation(); walletModal(b.dataset.tickets); } }, true);
+const readAsDataURL = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
+function walletModal(bid, openId) {
+  const b = T.bookings[bid]; if (!b) return;
+  const list = ticketsOf(bid);
+  openModal(`<div class="row between"><h2>🎫 ${esc(b.title || (KINDS[b.kind] || KINDS.other).label)}</h2><button class="iconbtn" type="button" data-close aria-label="Close">×</button></div>
+    <p class="hint">Add boarding passes, park tickets, e-tickets or confirmation screenshots. Everyone on the trip can open them, even without signal once Wayfinder has loaded the trip.</p>
+    ${list.length ? `<div class="tk-grid">${list.map(([id, t]) => `<button type="button" class="tk" data-tkopen="${id}">${t.type === "pdf" ? `<span class="tk-pdf">PDF</span>` : `<img src="${esc(t.data)}" alt="">`}<span class="tk-name">${esc(t.name || "Ticket")}</span><span class="hint">${esc(nameOf(t.by || ""))}</span></button>`).join("")}</div>` : `<div class="empty">No tickets yet.</div>`}
+    <div class="row" style="gap:8px;flex-wrap:wrap"><input class="input grow" id="tkName" maxlength="60" placeholder="Name (e.g. Sally's boarding pass)" aria-label="Ticket name"><label class="btn accent file-btn">Add photo or PDF<input type="file" id="tkFile" accept="image/*,application/pdf" multiple></label></div>
+    <p class="hint" id="tkMsg" role="status"></p>`, m => {
+    $$("[data-close]", m).forEach(x => x.onclick = closeModal);
+    $$("[data-tkopen]", m).forEach(x => x.onclick = () => ticketView(bid, x.dataset.tkopen));
+    $("#tkFile").onchange = async e => {
+      const files = [...e.target.files]; e.target.value = ""; let ok = 0;
+      for (const f of files) {
+        $("#tkMsg").textContent = `Saving ${f.name}…`;
+        try {
+          let data, type = "img";
+          if (f.type === "application/pdf") { if (f.size > 700000) { $("#tkMsg").textContent = `${f.name} is too big (over 700 KB). Take a screenshot of the ticket and add that instead.`; continue; } data = await readAsDataURL(f); type = "pdf"; }
+          else data = await shrink(f, 1800, 650000);   // kept sharp enough for QR codes and barcodes
+          const id = uidGen(), name = ($("#tkName").value.trim() || f.name.replace(/\.[^.]+$/, "")).slice(0, 60);
+          T.tickets[id] = { bid, name, type, data, by: ME.email, created: Date.now() };
+          await setDoc(doc(fs, `trips/${cur.id}/tickets/${id}`), T.tickets[id]); ok++;
+        } catch (err) { console.warn(err); $("#tkMsg").textContent = "Couldn't save that file."; }
+      }
+      if (ok) { renderTrip(); walletModal(bid); }
+    };
+    if (openId) ticketView(bid, openId);
+  });
+}
+function ticketView(bid, id) {
+  const list = ticketsOf(bid); let k = list.findIndex(([x]) => x === id); if (k < 0) return;
+  const lb = document.createElement("div"); lb.className = "lightbox tk-lb"; document.body.append(lb);
+  let armed = false, blobUrl = "";
+  const close = () => { if (blobUrl) URL.revokeObjectURL(blobUrl); lb.remove(); };
+  const paint = () => { const [tid, t] = list[k]; if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = ""; }
+    if (t.type === "pdf") { try { const bin = atob(t.data.split(",")[1]), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); blobUrl = URL.createObjectURL(new Blob([u8], { type: "application/pdf" })); } catch {} }
+    lb.innerHTML = `${t.type === "pdf" ? `<div class="tk-pdfbox"><p><b>${esc(t.name)}</b></p><a class="btn accent" href="${blobUrl}" target="_blank" rel="noopener">Open the PDF</a></div>` : `<img src="${esc(t.data)}" alt="${esc(t.name)}" class="tk-img">`}
+      <div class="al-bar"><button class="iconbtn" type="button" data-nav="-1" ${k ? "" : "disabled"} aria-label="Previous">‹</button><span class="grow"><b>${esc(t.name || "Ticket")}</b><span class="hint">Turn your screen brightness up for scanning</span></span>
+      <button class="btn ghost small" type="button" data-tkdel>Delete</button><a class="btn ghost small" href="${t.type === "pdf" ? blobUrl : esc(t.data)}" download="${esc((t.name || "ticket").replace(/[^\w -]/g, ""))}.${t.type === "pdf" ? "pdf" : "jpg"}">Save</a>
+      <button class="iconbtn" type="button" data-nav="1" ${k < list.length - 1 ? "" : "disabled"} aria-label="Next">›</button><button class="iconbtn" type="button" data-x aria-label="Close">×</button></div>`; };
+  lb.onclick = e => {
+    if (e.target.closest("[data-x]") || e.target === lb) return close();
+    const n = e.target.closest("[data-nav]"); if (n) { k = Math.max(0, Math.min(list.length - 1, k + +n.dataset.nav)); armed = false; return paint(); }
+    const d = e.target.closest("[data-tkdel]"); if (d) { if (!armed) { armed = true; d.textContent = "Tap again to delete"; return; }
+      const [tid] = list[k]; delete T.tickets[tid]; deleteDoc(doc(fs, `trips/${cur.id}/tickets/${tid}`)).catch(fail); close(); closeModal(); renderTrip(); walletModal(bid); }
+  };
+  paint();
+}
+// today's tickets, one tap away
+function todayTicketsHtml(iso) {
+  const bids = [...new Set(Object.values(T.tickets).map(t => t.bid))].filter(id => T.bookings[id] && bookingDays(T.bookings[id]).includes(iso));
+  if (!bids.length) return "";
+  return `<div class="card"><h3>🎫 Today's tickets</h3><div class="row" style="gap:8px;flex-wrap:wrap">${bids.map(id => `<button class="btn small" type="button" data-tickets="${id}">${esc(T.bookings[id].title || (KINDS[T.bookings[id].kind] || KINDS.other).label)} · ${ticketsOf(id).length}</button>`).join("")}</div></div>`;
+}
+function bookingDays(b) {
+  if (b.kind === "flight") return flightSegs(b).flatMap(l => [l.depDate, l.arrDate]).filter(validIso);
+  const a = b.checkIn || b.depDate || b.date || b.pickup || "", z = b.checkOut || b.arrDate || b.dropoff || a;
+  if (!validIso(a)) return []; const out = []; for (let d = a; d <= (validIso(z) ? z : a) && out.length < 60; d = addDays(d, 1)) out.push(d); return out;
+}
+
+// ================================================================ LEAVE BY
+// when to head out for the next stop that has a time, from the stop before it (or where you are, if you've allowed location)
+let HERE = null;
+function locateMe() { if (!navigator.geolocation) return; navigator.geolocation.getCurrentPosition(p => { HERE = { lat: p.coords.latitude, lon: p.coords.longitude, at: Date.now() }; if (cur?.tab === "today") renderTrip(true); }, () => {}, { maximumAge: 120000, timeout: 8000 }); }
+function leaveBy(iso, target, from) {
+  if (hm2m(target?.time) == null || !hasPt(target) || !hasPt(from)) return null;
+  const d = km(from, target), md = legModeOf(iso, target, d), travel = d < 0.05 ? 0 : legMins(d, md);
+  const at = hm2m(target.time) - travel - (travel ? 5 : 0);   // 5 minutes of slack
+  return { at, travel, md, d };
+}
+const m2hm = m => `${String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, "0")}:${String(((m % 60) + 60) % 60).padStart(2, "0")}`;
+function leaveByHtml(iso, next, prev, isToday) {
+  const from = isToday && HERE && Date.now() - HERE.at < 15 * 60e3 ? { ...HERE, name: "where you are" } : prev;
+  const lb = leaveBy(iso, next, from); if (!lb) return "";
+  const nowM = new Date().getHours() * 60 + new Date().getMinutes(), left = lb.at - nowM;
+  if (isToday && left < -45) return "";   // that time has long passed
+  const cls = !isToday ? "" : left < 0 ? "bad" : left <= 15 ? "warn" : "";
+  return `<div class="leave ${cls}">⏱ <b>${isToday && left < 0 ? `You're running ${fmtMin(-left)} late` : `Leave by ${fmt12(m2hm(lb.at))}`}</b>${isToday && left >= 0 ? ` · in ${fmtMin(left) || "0m"}` : ""}<span class="hint">${MODE_IC[lb.md]} about ${fmtMin(lb.travel) || "0m"} from ${esc(from.name)} to make ${fmt12(next.time)}</span>
+    ${isToday && !HERE && navigator.geolocation ? `<button class="linkbtn" type="button" id="useLoc">Use where I am</button>` : ""}</div>`;
+}
+// notifications while Wayfinder is open
+setInterval(() => {
+  if (!cur || !T.trip) return;
+  const iso = isoOf(new Date()); if (!tripDays().includes(iso)) return;
+  const places = dayItems(iso).filter(x => x.k === "p"), nowM = new Date().getHours() * 60 + new Date().getMinutes();
+  places.forEach((p, k) => {
+    if (p.visited || hm2m(p.time) == null) return;
+    const st = stayFor(iso), prev = places.slice(0, k).reverse().find(hasPt) || (st && hasPt(st[1]) ? st[1] : null), from = HERE && Date.now() - HERE.at < 15 * 60e3 ? HERE : prev, lb = leaveBy(iso, p, from); if (!lb || !lb.travel) return;
+    const left = lb.at - nowM;
+    if (left <= 10 && left > 0) tpOnce(`lb10|${iso}|${p.id}|${p.time}`, `Leave in ${left} min`, `Head to ${p.name} by ${fmt12(m2hm(lb.at))} to make ${fmt12(p.time)} (${fmtMin(lb.travel)} ${MODES[lb.md].verb}).`);
+    else if (left <= 0 && left > -10) tpOnce(`lb0|${iso}|${p.id}|${p.time}`, "Time to go", `Leave now for ${p.name} (${fmt12(p.time)}).`);
+  });
+}, 60e3);
+// in the itinerary: flag stops with a time that the day can't realistically reach
+function tightTag(iso, a, b, d, md) {
+  const ta = hm2m(a?.time), tb = hm2m(b?.time); if (ta == null || tb == null || d == null) return "";
+  const gap = tb - ta, need = d < 0.05 ? 0 : legMins(d, md);
+  if (gap < 0) return `<span class="tight bad" title="This stop's time is earlier than the one before it">⚠ Before the previous stop</span>`;
+  if (gap < need) return `<span class="tight bad" title="Not enough time to get here">⚠ ${fmtMin(gap) || "0m"} to travel ${fmtMin(need)}</span>`;
+  if (gap - need < 30) return `<span class="tight" title="Time at ${esc(a.name)} after travel">⏱ Only ${fmtMin(gap - need) || "0m"} at ${esc(a.name)}</span>`;
+  return "";
+}
+
 // ================================================================ TODAY
 let todayIso = null;
 function todayDefault() {
@@ -2166,6 +2288,7 @@ function viewToday(v) {
       <div class="row" style="gap:12px;align-items:center"><span class="thumb big">${photoSrcOf(next) ? `<img src="${esc(photoSrcOf(next))}" alt="" onerror="this.remove()">` : esc(next.name.charAt(0))}</span>
         <div class="grow"><h2>${esc(next.name)}</h2><span class="hint">${next.time ? `<b>${esc(next.time)}</b> · ` : ""}${esc(TYPE[next.type].label)}${next.addr ? " · " + esc(next.addr) : ""}</span>${hoursBadge(next, iso)}
         ${d != null ? `<span class="hint">${MODE_IC[md]} ${esc(legText(d, md))} from ${esc(prev.name)}</span>` : ""}</div></div>
+      ${leaveByHtml(iso, next, prev || (stay && hasPt(stay[1]) ? { ...stay[1], name: stay[1].title || "your stay" } : null), isToday)}
       ${hasPt(next) ? `<div class="row" style="gap:8px;flex-wrap:wrap"><a class="btn accent small" href="https://maps.apple.com/directions?destination=${ll}&mode=${APPLE_MODE[md]}" target="_blank" rel="noopener">Directions in Apple Maps</a><a class="btn small" href="https://www.google.com/maps/dir/?api=1&destination=${ll}&travelmode=${MODES[md].g}" target="_blank" rel="noopener">Google Maps</a><button class="btn ghost small" type="button" data-visit="${next.id}">Mark as visited ✓</button></div>` : `<button class="btn ghost small" type="button" data-visit="${next.id}">Mark as visited ✓</button>`}
     </div>`;
   } else if (places.length) nextHtml = `<div class="card"><b>All done for the day 🎉</b><p class="hint">You've visited every stop.</p></div>`;
@@ -2175,6 +2298,7 @@ function viewToday(v) {
     ${wxChip(iso, true)}
     ${isToday ? tzLine(iso) + comingUpHtml(3) : ""}
     ${bk.length || stay ? `<div class="card"><h3>Bookings</h3><div class="today-bk">${bk.map(x => `<button type="button" class="bk-mini" data-bedit="${x.id}">${x.txt}</button>`).join("")}${stay && !bk.some(x => x.id === stay[0]) ? `<button type="button" class="bk-mini" data-bedit="${stay[0]}"><b>Staying at</b> ${esc(stay[1].title || "your stay")}${stay[1].addr ? " · " + esc(stay[1].addr) : ""}</button>` : ""}</div></div>` : ""}
+    ${todayTicketsHtml(iso)}
     ${todayParksHtml(iso)}
     ${nextHtml}
     <div class="card"><div class="row between"><h3>The plan</h3><a class="linkbtn" href="#/t/${cur.id}/plan" data-goday="${iso}">Edit in Itinerary</a></div>
@@ -2183,12 +2307,14 @@ function viewToday(v) {
     <div class="card"><h3>Journal</h3><textarea id="jr-${iso}" data-journal="${iso}" rows="3" maxlength="4000" placeholder="${isToday ? "How was today? A favorite moment, a meal to remember…" : "Notes or memories from this day"}">${esc(T.days[iso]?.journal || "")}</textarea><p class="hint">Journal entries go into the memory book (Export PDF → Memory book).</p></div>`;
   v.onclick = e => {
     const d = e.target.closest("[data-tday]"); if (d && d.dataset.tday) { todayIso = d.dataset.tday; renderTrip(); return; }
+    if (e.target.closest("#useLoc")) { locateMe(); return; }
     const vb = e.target.closest("button[data-visit]"); if (vb) { const id = vb.dataset.visit; T.places[id] = { ...T.places[id], visited: true }; savePlace(id); renderTrip(); return; }
     const be = e.target.closest("[data-bedit]"); if (be) return bookingModal(be.dataset.bedit);
     const g = e.target.closest("[data-goday]"); if (g) { mapFocus = g.dataset.goday; scrollToDay = g.dataset.goday; fitPending = true; }
     const gp = e.target.closest("[data-gopark]"); if (gp) { const [a, c] = gp.dataset.gopark.split("|"); parkSel = { iso: a, pid: c }; }
   };
   fillTodayParks(iso);
+  if (isToday && !HERE && navigator.permissions) navigator.permissions.query({ name: "geolocation" }).then(r => { if (r.state === "granted") locateMe(); }).catch(() => {});
   v.onchange = e => { const id = e.target.dataset?.visit; if (id && e.target.type === "checkbox") { T.places[id] = { ...T.places[id], visited: e.target.checked }; savePlace(id); renderTrip(); } };
   v.oninput = e => { const iso2 = e.target.dataset?.journal; if (iso2) { T.days[iso2] = { ...(T.days[iso2] || {}), journal: e.target.value.slice(0, 4000) }; saveDay(iso2, 800); } };
   loadWeather(); loadHours();
@@ -2369,8 +2495,8 @@ document.addEventListener("click", e => { const b = e.target.closest("[data-cmt]
 // ================================================================ QUICK VOTES
 function pollsHtml() {
   const polls = Object.entries(T.polls || {}).sort((a, b) => (a[1].closed ? 1 : 0) - (b[1].closed ? 1 : 0) || (b[1].at || 0) - (a[1].at || 0));
-  return `<div class="row between" style="margin-top:4px"><h2>Quick votes</h2><button class="btn small" type="button" id="newPoll">+ New vote</button></div>
-    ${polls.map(([id, p]) => {
+  return `<div class="row between" style="margin-top:4px"><h2>Quick votes</h2><span class="row" style="gap:6px"><button class="btn ghost small" type="button" id="newDatePoll">+ Pick dates</button><button class="btn small" type="button" id="newPoll">+ New vote</button></span></div>
+    ${polls.map(([id, p]) => { if (p.kind === "dates") return datePollHtml(id, p);
       const votes = p.votes || {}, total = Object.keys(votes).length, mine = votes[ekey(ME.email)];
       const counts = Object.fromEntries((p.opts || []).map(o => [o.id, Object.entries(votes).filter(([, v]) => v === o.id).map(([k]) => k)]));
       const top = Math.max(0, ...Object.values(counts).map(x => x.length));
@@ -2404,10 +2530,52 @@ function pollModal() {
     setTimeout(() => $("#pmQ")?.focus(), 30);
   });
 }
+// ---- when can everyone go? each person ticks every option that works for them
+function datePollHtml(id, p) {
+  const votes = p.votes || {}, mine = votes[ekey(ME.email)] || [], voted = Object.keys(votes).length;
+  const cnt = o => Object.values(votes).filter(v => Array.isArray(v) && v.includes(o.id)).length, top = Math.max(0, ...(p.opts || []).map(cnt));
+  const waiting = members().filter(e => !votes[ekey(e)]);
+  return `<div class="card poll dpoll ${p.closed ? "closed" : ""}" data-poll="${id}"><div class="row between"><h3>📅 ${esc(p.q)}</h3>${p.closed ? `<span class="pill">Decided</span>` : ""}</div>
+    <p class="hint">Tick every option that works for you.</p>
+    <div class="poll-opts">${(p.opts || []).map(o => { const n = cnt(o), who = Object.entries(votes).filter(([, v]) => Array.isArray(v) && v.includes(o.id)).map(([k]) => nameOf(k.replace(/,/g, "."))), best = n === top && top > 0;
+      return `<button type="button" class="poll-opt ${mine.includes(o.id) ? "mine" : ""} ${best ? "win" : ""}" data-dvote="${o.id}" ${p.closed ? "disabled" : ""}><i style="width:${members().length ? n / members().length * 100 : 0}%"></i><span class="po-t">${mine.includes(o.id) ? "✓ " : ""}${best ? "⭐ " : ""}${esc(dateRangeTxt(o.from, o.to))}<span class="hint" style="display:inline"> · ${daysBetween(o.from, o.to) + 1} days</span></span><span class="po-n">${n}/${members().length}${who.length ? " · " + esc(who.join(", ")) : ""}</span></button>`; }).join("")}</div>
+    <div class="row between"><span class="hint">${esc(nameOf(p.by))} asked${!p.closed && waiting.length ? ` · waiting on ${waiting.map(e => esc(nameOf(e))).join(", ")}` : ""}${voted && top === members().length ? " · ⭐ works for everyone" : ""}</span>
+      <span class="row" style="gap:6px">${isOwner() && top > 0 ? `<button class="btn small" type="button" data-puse>Use the best dates</button>` : ""}${p.by === ME.email || isOwner() ? `${p.closed ? "" : `<button class="btn ghost small" type="button" data-pclose>Close</button>`}<button class="iconbtn del" type="button" data-pdel aria-label="Delete">×</button>` : ""}</span></div></div>`;
+}
+const dateRangeTxt = (a, b) => a === b ? fmtD(a, { weekday: "short", month: "short", day: "numeric" }) : `${fmtD(a, { weekday: "short", month: "short", day: "numeric" })} – ${fmtD(b, { weekday: "short", month: "short", day: "numeric", year: a.slice(0, 4) !== b.slice(0, 4) ? "numeric" : undefined })}`;
+function datePollModal() {
+  const len = tripDays().length || 4; let opts = [{ from: "", to: "" }, { from: "", to: "" }];
+  const paint = () => { $("#dpOpts").innerHTML = opts.map((o, i) => `<div class="row" style="gap:6px;align-items:end"><label class="field grow">From<input type="date" data-df="${i}" value="${esc(o.from)}"></label><label class="field grow">To<input type="date" data-dt="${i}" value="${esc(o.to)}"></label>${opts.length > 2 ? `<button class="iconbtn del" type="button" data-dr="${i}" aria-label="Remove">×</button>` : ""}</div>`).join(""); };
+  openModal(`<div class="row between"><h2>Pick dates together</h2><button class="iconbtn" type="button" data-close aria-label="Close">×</button></div>
+    <label class="field" for="dqQ">Question<input id="dqQ" maxlength="100" value="When can everyone go?"></label>
+    <div class="field"><span>Date options</span><div id="dpOpts" style="display:grid;gap:6px"></div><button class="linkbtn" type="button" id="dpAdd" style="justify-self:start">+ Add another option</button></div>
+    <p class="hint">Everyone ticks every option that works for them, and the best one is starred.</p><p class="hint" id="dqMsg"></p>
+    <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn accent" type="button" id="dqGo">Start</button></div>`, m => {
+    $$("[data-close]", m).forEach(x => x.onclick = closeModal); paint();
+    $("#dpAdd").onclick = () => { if (opts.length < 10) { opts.push({ from: "", to: "" }); paint(); } };
+    $("#dpOpts").onchange = e => { const i = e.target.dataset.df ?? e.target.dataset.dt; if (i == null) return; const o = opts[+i];
+      if (e.target.dataset.df != null) { o.from = e.target.value; if (validIso(o.from) && (!validIso(o.to) || o.to < o.from)) { o.to = addDays(o.from, len - 1); paint(); } } else o.to = e.target.value; };
+    $("#dpOpts").onclick = e => { const r = e.target.closest("[data-dr]"); if (r) { opts.splice(+r.dataset.dr, 1); paint(); } };
+    $("#dqGo").onclick = () => {
+      const ok = opts.filter(o => validIso(o.from)).map(o => ({ id: uidGen(), from: o.from, to: validIso(o.to) && o.to >= o.from ? o.to : o.from }));
+      if (ok.length < 2) { $("#dqMsg").textContent = "Add at least two date options."; return; }
+      const id = uidGen(), poll = { kind: "dates", q: ($("#dqQ").value.trim() || "When can everyone go?").slice(0, 100), opts: ok, votes: {}, by: ME.email, at: Date.now(), closed: false };
+      T.polls[id] = poll; save(tp("polls/" + id), poll, 0); closeModal(); renderTrip();
+    };
+  });
+}
 function wirePolls(v) {
   $("#newPoll").onclick = pollModal;
+  $("#newDatePoll").onclick = datePollModal;
   v.addEventListener("click", e => {
     const card = e.target.closest("[data-poll]"); if (!card) return; const id = card.dataset.poll, p = T.polls[id]; if (!p) return;
+    const dv = e.target.closest("[data-dvote]");
+    if (dv) { const k = ekey(ME.email), cur0 = Array.isArray(p.votes?.[k]) ? p.votes[k] : [], nx = cur0.includes(dv.dataset.dvote) ? cur0.filter(x => x !== dv.dataset.dvote) : [...cur0, dv.dataset.dvote];
+      const votes = { ...(p.votes || {}) }; if (nx.length) votes[k] = nx; else delete votes[k];
+      T.polls[id] = { ...p, votes }; updateDoc(doc(fs, tp("polls/" + id)), { ["votes." + k]: nx.length ? nx : deleteField() }).catch(fail); renderTrip(); return; }
+    if (e.target.closest("[data-puse]")) { const cnt = o => Object.values(p.votes || {}).filter(v => Array.isArray(v) && v.includes(o.id)).length, best = [...p.opts].sort((a, b) => cnt(b) - cnt(a) || a.from.localeCompare(b.from))[0];
+      T.trip = { ...T.trip, start: best.from, end: best.to }; updateDoc(doc(fs, "trips/" + cur.id), { start: best.from, end: best.to }).catch(fail);
+      T.polls[id] = { ...p, closed: true }; updateDoc(doc(fs, tp("polls/" + id)), { closed: true }).catch(fail); renderTrip(); toast(`Trip dates set to ${esc(dateRangeTxt(best.from, best.to))}.`); return; }
     const vb = e.target.closest("[data-vote]");
     if (vb) { const k = ekey(ME.email), on = (p.votes || {})[k] !== vb.dataset.vote, votes = { ...(p.votes || {}) }; if (on) votes[k] = vb.dataset.vote; else delete votes[k];
       T.polls[id] = { ...p, votes }; updateDoc(doc(fs, tp("polls/" + id)), { ["votes." + k]: on ? vb.dataset.vote : deleteField() }).catch(fail); renderTrip(); return; }
@@ -2468,6 +2636,167 @@ function tripCountries() {
   return [...seen.values()].filter(c => c.name !== "United States");
 }
 loadCG();
+// ================================================================ ROAD TRIP
+// drives between your stays (and around each day), with a fuel and parking estimate you can add to the budget
+const DRV = (() => { try { return JSON.parse(localStorage.getItem("trips-drive") || "{}"); } catch { return {}; } })();
+async function driveKm(a, b) {
+  const k = [a.lat, a.lon, b.lat, b.lon].map(x => (+x).toFixed(3)).join(",");
+  if (DRV[k]) return DRV[k];
+  try { const j = await fetch(`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`).then(r => r.json());
+    const r = j.routes?.[0]; if (r) { DRV[k] = { km: r.distance / 1000, min: Math.round(r.duration / 60) }; try { localStorage.setItem("trips-drive", JSON.stringify(DRV)); } catch {} return DRV[k]; } } catch {}
+  return null;
+}
+const usUnits = () => (T.trip.currency || PROFILE.homeCur || "USD") === "USD";
+function roadLegs() {
+  const stays = Object.entries(T.bookings).filter(([, b]) => (KINDS[b.kind] || KINDS.other).group === "lodging" && hasPt(b) && validIso(b.checkIn)).sort((a, b) => a[1].checkIn.localeCompare(b[1].checkIn));
+  const legs = []; for (let i = 1; i < stays.length; i++) { const a = stays[i - 1][1], b = stays[i][1]; if (km(a, b) > 3) legs.push({ a, b, d: b.checkIn, key: stays[i - 1][0] + ">" + stays[i][0] }); }
+  const days = tripDays().map(iso => { const ps = dayPlaces(iso).filter(hasPt); let k = 0; for (let i = 1; i < ps.length; i++) if (legModeOf(iso, ps[i], km(ps[i - 1], ps[i])) === "drive") k += km(ps[i - 1], ps[i]) * 1.35; return k; });
+  const nights = stays.reduce((a, [, b]) => a + (validIso(b.checkOut) ? Math.max(0, daysBetween(b.checkIn, b.checkOut)) : 0), 0);
+  return { legs, cityKm: days.reduce((a, x) => a + x, 0), nights };
+}
+let roadBusy = false;
+function roadCard() {
+  const r = T.trip.road || {}, hasCar = Object.values(T.bookings).some(b => b.kind === "car");
+  if (!r.on && !hasCar) return `<button class="linkbtn" type="button" id="roadOn" style="justify-self:start">🚗 Driving on this trip? Add a road trip helper</button>`;
+  const { legs, cityKm, nights } = roadLegs(), us = usUnits();
+  const known = legs.map(l => DRV[[l.a.lat, l.a.lon, l.b.lat, l.b.lon].map(x => (+x).toFixed(3)).join(",")]);
+  if (!roadBusy && known.some(x => !x) && navigator.onLine) { roadBusy = true; Promise.all(legs.map(l => driveKm(l.a, l.b))).finally(() => { roadBusy = false; if (cur?.tab === "overview") renderTrip(true); }); }
+  const legKm = legs.reduce((a, l, i) => a + (known[i]?.km ?? km(l.a, l.b) * 1.3), 0), totKm = legKm + cityKm;
+  const eff = num(r.eff) || (us ? 28 : 7), price = num(r.gas) || (us ? 4.5 : 1.9), park = num(r.park) || 0;
+  const fuel = us ? totKm * 0.621371 / eff * price : totKm / 100 * eff * price, parking = park * nights, dist = k => us ? `${Math.round(k * 0.621371)} mi` : `${Math.round(k)} km`;
+  return `<div class="card road"><div class="row between"><h3>🚗 Road trip</h3>${!hasCar ? `<button class="linkbtn" type="button" id="roadOff">Hide</button>` : ""}</div>
+    ${legs.length ? `<div class="road-legs">${legs.map((l, i) => `<div class="sh-row"><b>${esc(fmtD(l.d, { weekday: "short", month: "short", day: "numeric" }))}</b><span>${esc(l.a.title || "Stay")} → ${esc(l.b.title || "Stay")}<span class="hint">${known[i] ? `${dist(known[i].km)} · about ${fmtMin(known[i].min)} driving` : `about ${dist(km(l.a, l.b) * 1.3)} · working out the drive…`}</span></span><a class="ext" href="https://www.google.com/maps/dir/?api=1&origin=${l.a.lat},${l.a.lon}&destination=${l.b.lat},${l.b.lon}&travelmode=driving" target="_blank" rel="noopener">Route ↗</a></div>`).join("")}</div>` : `<p class="hint">Add your stays (with addresses) under Bookings to see the drives between them.</p>`}
+    ${cityKm > 1 ? `<p class="hint">Plus about ${dist(cityKm)} of driving between stops on days set to Driving.</p>` : ""}
+    <div class="grid3"><label class="field">${us ? "Miles per gallon" : "Liters per 100 km"}<input class="input" type="number" min="1" step="0.1" data-road="eff" value="${esc(r.eff || "")}" placeholder="${us ? 28 : 7}"></label>
+      <label class="field">Gas price (${us ? "per gallon" : "per liter"})<input class="input" type="number" min="0" step="0.01" data-road="gas" value="${esc(r.gas || "")}" placeholder="${us ? "4.50" : "1.90"}"></label>
+      <label class="field">Parking per night<input class="input" type="number" min="0" step="1" data-road="park" value="${esc(r.park || "")}" placeholder="0"></label></div>
+    <p><b>About ${dist(totKm)}</b> · gas about <b>${money(fuel)}</b>${parking ? ` · parking about <b>${money(parking)}</b> (${nights} night${nights === 1 ? "" : "s"})` : ""}</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn small" type="button" id="roadBudget">${r.exp ? "Update the budget estimates" : "Add to budget as estimates"}</button><span class="hint">Distances and gas use are estimates, and gas prices vary a lot by place.</span></div></div>`;
+}
+function wireRoad(v) {
+  const ref = doc(fs, "trips/" + cur.id);
+  $("#roadOn") && ($("#roadOn").onclick = () => { T.trip.road = { ...(T.trip.road || {}), on: true }; updateDoc(ref, { "road.on": true }).catch(fail); renderTrip(); });
+  $("#roadOff") && ($("#roadOff").onclick = () => { T.trip.road = { ...(T.trip.road || {}), on: false }; updateDoc(ref, { "road.on": false }).catch(fail); renderTrip(); });
+  $$("[data-road]", v).forEach(el => el.onchange = () => { const k = el.dataset.road, val = num(el.value) || ""; T.trip.road = { ...(T.trip.road || {}), [k]: val }; updateDoc(ref, { ["road." + k]: val }).catch(fail); renderTrip(); });
+  $("#roadBudget") && ($("#roadBudget").onclick = () => {
+    const r = T.trip.road || {}, { legs, cityKm, nights } = roadLegs(), us = usUnits();
+    const totKm = legs.reduce((a, l) => a + (DRV[[l.a.lat, l.a.lon, l.b.lat, l.b.lon].map(x => (+x).toFixed(3)).join(",")]?.km ?? km(l.a, l.b) * 1.3), 0) + cityKm;
+    const eff = num(r.eff) || (us ? 28 : 7), price = num(r.gas) || (us ? 4.5 : 1.9), fuel = Math.round((us ? totKm * 0.621371 / eff * price : totKm / 100 * eff * price) * 100) / 100, parking = Math.round(num(r.park) * nights * 100) / 100;
+    const ids = { gas: r.exp?.gas || uidGen(), park: r.exp?.park || uidGen() }, base = { kind: "expense", currency: homeCur(), rate: 1, home: homeCur(), date: T.trip.start || "", category: "Transport", paidBy: ME.email, split: members(), planned: true, created: Date.now() };
+    T.expenses[ids.gas] = { ...base, amount: fuel, desc: "Gas (estimate)" }; save(tp("expenses/" + ids.gas), T.expenses[ids.gas], 0);
+    if (parking) { T.expenses[ids.park] = { ...base, amount: parking, desc: "Parking (estimate)" }; save(tp("expenses/" + ids.park), T.expenses[ids.park], 0); }
+    T.trip.road = { ...r, exp: ids }; updateDoc(ref, { "road.exp": ids }).catch(fail); toast("Added to the budget as estimates."); renderTrip();
+  });
+}
+
+// ================================================================ OFFLINE MAPS
+// Saves the free map (OpenFreeMap) for the areas of a trip on this phone. The service worker keeps these tiles and uses them with no signal.
+const OFFK = "trips-offline";
+const offlineInfo = () => { try { return JSON.parse(localStorage.getItem(OFFK) || "{}"); } catch { return {}; } };
+function offlineAreas() {
+  const pts = [...placeList().filter(hasPt), ...Object.values(T.bookings).filter(hasPt), ...tripDests(T.trip).filter(hasPt),
+    ...Object.values(T.days).flatMap(d => (d.parks || []).filter(hasPt))];
+  const out = [];
+  for (const p of pts) { let a = out.find(c => km(c, p) < 30); if (!a) { a = { lat: p.lat, lon: p.lon, pts: [], label: p.city || p.name || "" }; out.push(a); } a.pts.push(p); }
+  return out.map(a => { const la = a.pts.map(p => p.lat), lo = a.pts.map(p => p.lon), pad = 0.02;
+    return { label: a.label, n: a.pts.length, s: Math.min(...la) - pad, n2: Math.max(...la) + pad, w: Math.min(...lo) - pad, e: Math.max(...lo) + pad, lat: a.lat, lon: a.lon }; });
+}
+const lon2x = (lon, z) => Math.floor((lon + 180) / 360 * 2 ** z);
+const lat2y = (lat, z) => { const r = lat * Math.PI / 180; return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z); };
+function tilesFor(a, maxZ = 14) {
+  const out = [];
+  for (let z = 5; z <= maxZ; z++) {
+    const wide = z <= 10 ? 0.4 : 0;   // a wider area at low zoom, so the region around is there too
+    const x0 = lon2x(a.w - wide, z), x1 = lon2x(a.e + wide, z), y0 = lat2y(a.n2 + wide, z), y1 = lat2y(a.s - wide, z);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) out.push([z, x, y]);
+  }
+  return out;
+}
+function offlinePlan() {
+  const areas = offlineAreas(); let list = [];
+  for (const a of areas) { let t = tilesFor(a, 14); if (t.length > 3500) t = tilesFor(a, 13); if (t.length > 3500) t = tilesFor(a, 12); list.push(...t); }
+  const seen = new Set(); list = list.filter(([z, x, y]) => { const k = z + "/" + x + "/" + y; if (seen.has(k)) return false; seen.add(k); return true; });
+  return { areas, tiles: list, mb: Math.round(list.length * 0.035) };
+}
+let offBusy = null;
+async function saveOffline(btn, msg) {
+  if (offBusy) return; if (!("serviceWorker" in navigator) || !navigator.serviceWorker.controller) { msg.textContent = "Reload the page once, then try again (offline storage starts after the first visit)."; return; }
+  const plan = offlinePlan(); if (!plan.tiles.length) { msg.textContent = "Add some places or bookings with a location first."; return; }
+  offBusy = { stop: false }; btn.textContent = "Stop";
+  try {
+    const urls = [];
+    for (const name of ["liberty", "dark"]) {
+      const st = await fetch("https://tiles.openfreemap.org/styles/" + name).then(r => r.json()); urls.push("https://tiles.openfreemap.org/styles/" + name);
+      const sprites = Array.isArray(st.sprite) ? st.sprite.map(x => x.url) : [st.sprite]; sprites.filter(Boolean).forEach(u => ["", "@2x"].forEach(r => urls.push(u + r + ".json", u + r + ".png")));
+      const fonts = new Set(); (st.layers || []).forEach(l => (l.layout?.["text-font"] || []).forEach(f => fonts.add(f)));
+      if (st.glyphs) for (const f of fonts) for (const r of ["0-255", "256-511", "512-767", "768-1023", "8192-8447"]) urls.push(st.glyphs.replace("{fontstack}", encodeURIComponent(f)).replace("{range}", r));
+      if (name === "liberty") { const src = Object.values(st.sources || {}).find(x => x.type === "vector" && x.url); if (src) { const tj = await fetch(src.url).then(r => r.json()); urls.push(src.url); const tpl = tj.tiles?.[0]; if (tpl) plan.tiles.forEach(([z, x, y]) => urls.push(tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y))); } }
+    }
+    const uniq = [...new Set(urls)]; let done = 0, bad = 0, i = 0;
+    const worker = async () => { while (i < uniq.length && !offBusy.stop) { const u = uniq[i++]; try { const r = await fetch(u); if (!r.ok && r.status !== 204) bad++; } catch { bad++; } done++; if (done % 20 === 0 || done === uniq.length) msg.textContent = `Saving maps… ${Math.round(done / uniq.length * 100)}%`; } };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    if (offBusy.stop) { msg.textContent = "Stopped. What was saved so far stays on this phone."; }
+    else { const info = offlineInfo(); info[cur.id] = { when: Date.now(), n: plan.tiles.length, areas: plan.areas.length }; try { localStorage.setItem(OFFK, JSON.stringify(info)); } catch {}
+      msg.textContent = bad > uniq.length / 10 ? "Some map pieces couldn't be saved. Try again on Wi-Fi." : "Maps saved on this phone. They'll show when you have no signal."; }
+  } catch (e) { msg.textContent = "Couldn't reach the map server. Try again on Wi-Fi."; }
+  offBusy = null; renderTrip();
+}
+function offlineCard() {
+  const info = offlineInfo()[cur.id], plan = offlinePlan(); if (!plan.areas.length) return "";
+  return `<div class="card offline-card"><div class="row between"><h3>📥 Maps for offline</h3><button class="btn small" type="button" id="offSave">${offBusy ? "Stop" : info ? "Update" : "Save on this phone"}</button></div>
+    <p class="hint">${info ? `Saved ${esc(new Date(info.when).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}. ` : ""}Saves the map around ${plan.areas.length === 1 ? esc(plan.areas[0].label || "your trip") : plan.areas.length + " areas of this trip"} (about ${plan.mb} MB) so it works on the plane, the subway or abroad without data. Each person saves it on their own phone, best on Wi-Fi.${useGoogle() ? " With no signal, the map switches to this saved map." : ""}</p>
+    <p class="hint" id="offMsg" role="status"></p></div>`;
+}
+document.addEventListener("click", e => { const b = e.target.closest("#offSave"); if (!b) return; if (offBusy) { offBusy.stop = true; return; } saveOffline(b, $("#offMsg")); });
+addEventListener("online", () => { if (map) setTiles(); });
+addEventListener("offline", () => { if (map && useGoogle()) setTiles(); });
+
+// ================================================================ EMERGENCY CARD
+const NOMI_LANG = { yue: "zh-HK", zht: "zh-TW", ptb: "pt-BR", ptp: "pt", fil: "tl" };
+const embassyUrl = cc => cc === "GB" ? "https://uk.usembassy.gov/" : cc === "HK" ? "https://hk.usconsulate.gov/" : cc ? `https://${cc.toLowerCase()}.usembassy.gov/` : "https://www.usembassy.gov/";
+const telOf = t => String(t || "").replace(/[^\d+]/g, "");
+// a stay's address in the local language, for showing a taxi driver (saved on the booking once found)
+async function localAddr(id) {
+  const b = T.bookings[id]; if (!hasPt(b) || b.addrLocal) return b?.addrLocal;
+  const q = (lang) => fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${b.lat}&lon=${b.lon}&zoom=18&addressdetails=1&accept-language=${lang}`).then(r => r.json());
+  const en = await q("en"), cc = (en.address?.country_code || "").toUpperCase(), c = CG?.countries.find(x => x.cc === cc);
+  if (!c?.lang) return null;
+  const j = await q(NOMI_LANG[c.lang] || c.lang); if (!j.display_name) return null;
+  const a = j.address || {}, local = [a.postcode, a.state || a.province, a.city || a.town || a.village, a.city_district || a.suburb || a.quarter, a.neighbourhood, a.road, a.house_number].filter(Boolean);
+  const txt = /^(ja|zh|zht|yue|ko)$/.test(c.lang) && local.length > 2 ? local.join(" ") : j.display_name.split(", ").filter(x => x !== a.country).join(", ");
+  const out = { lang: c.lang, txt: txt.slice(0, 200), cc };
+  T.bookings[id] = { ...b, addrLocal: out }; updateDoc(doc(fs, `trips/${cur.id}/bookings/${id}`), { addrLocal: out }).catch(() => {});
+  return out;
+}
+function driverCard(id) {
+  const b = T.bookings[id], lb = document.createElement("div"); lb.className = "lightbox driver"; document.body.append(lb);
+  const paint = () => { const L = b.addrLocal || T.bookings[id]?.addrLocal;
+    lb.innerHTML = `<div class="driver-card"><p class="hint">${L ? "Please take me to:" : "Please take me to:"}</p>${L ? `<p class="drv-local" lang="${esc(SPEECH[L.lang] || L.lang)}">${esc(L.txt)}</p>` : ""}<p class="drv-name">${esc(b.title || "")}</p><p class="drv-addr">${esc(b.addr || "")}</p>
+      <div class="row" style="gap:8px;justify-content:center;flex-wrap:wrap">${L && canSpeak(L.lang) ? `<button class="btn small" type="button" data-say="${esc(L.txt)}" data-lang="${esc(L.lang)}">🔊 Say it</button>` : ""}<button class="btn ghost small" type="button" data-x>Close</button></div></div>`; };
+  lb.onclick = e => { const sb = e.target.closest("[data-say]"); if (sb) return say(sb.dataset.say, sb.dataset.lang, sb); if (e.target.closest("[data-x]") || e.target === lb) lb.remove(); };
+  paint();
+  if (!b.addrLocal && navigator.onLine && hasPt(b)) localAddr(id).then(L => { if (L && lb.isConnected) paint(); }).catch(() => {});
+}
+function viewSOS(v) {
+  if (!CG) loadCG().then(() => { if (cur?.tab === "sos") renderTrip(); });
+  const e = T.trip.emergency || {}, cs = tripCountries(), stays = Object.entries(T.bookings).filter(([, b]) => (KINDS[b.kind] || KINDS.other).group === "lodging").sort((a, b) => String(a[1].checkIn || "").localeCompare(String(b[1].checkIn || "")));
+  const f = (k, label, ph = "", type = "text") => `<label class="field">${label}<input class="input" data-sos="${k}" type="${type}" value="${esc(e[k] || "")}" placeholder="${esc(ph)}" maxlength="120"></label>`;
+  const tel = (n, label) => n ? `<a class="btn small" href="tel:${esc(telOf(n))}">📞 ${esc(label || n)}</a>` : "";
+  v.innerHTML = `<div><h2>Emergency card</h2><p class="hint">Everything in one place if something goes wrong. Shared with everyone on the trip, and it opens without signal once the trip has loaded.</p></div>
+    ${cs.length ? `<div class="card sos-num"><h3>Emergency numbers</h3>${cs.map(c => `<div class="sos-row"><b>${esc(c.name)}</b><span>${esc(c.em)}</span></div>`).join("")}<p class="hint">For any emergency in the EU you can also call 112.</p></div>` : `<div class="card sos-num"><h3>Emergency numbers</h3><div class="sos-row"><b>United States</b><span>911</span></div></div>`}
+    ${cs.length ? `<div class="card"><h3>U.S. embassy and help abroad</h3>${cs.map(c => `<div class="sos-row"><b>${esc(c.name)}</b><a class="ext" href="${embassyUrl(c.cc)}" target="_blank" rel="noopener">U.S. embassy site ↗</a></div>`).join("")}
+      <p>U.S. State Department, for U.S. citizens in an emergency abroad: ${tel("+12025014444", "+1 202-501-4444")} (from overseas) or ${tel("+18884074747", "1-888-407-4747")} (from the U.S.)</p>
+      <p class="hint">Enroll in <a class="ext" href="https://step.state.gov/" target="_blank" rel="noopener">STEP ↗</a> so the embassy can reach you in an emergency.</p></div>` : ""}
+    <div class="card"><h3>🛏 Show the driver</h3>${stays.length ? stays.map(([id, b]) => `<div class="sos-row"><span><b>${esc(b.title || "Stay")}</b><span class="hint">${esc(b.addr || "No address yet")}${b.checkIn ? " · " + esc(fmtD(b.checkIn, { month: "short", day: "numeric" })) : ""}</span>${b.addrLocal ? `<span class="hint" lang="${esc(SPEECH[b.addrLocal.lang] || "")}">${esc(b.addrLocal.txt)}</span>` : ""}</span><button class="btn small" type="button" data-driver="${id}" ${b.addr || hasPt(b) ? "" : "disabled"}>Show</button></div>`).join("") + `<p class="hint">Shows the address big on your screen, written in the local language when you're abroad. Open each one once while you have signal so it's saved for offline.</p>` : `<p class="hint">Add your hotels under Bookings and they'll show here.</p>`}</div>
+    <div class="card sos-form"><h3>Travel insurance</h3><div class="grid2">${f("insurer", "Insurer", "Allianz, World Nomads…")}${f("policy", "Policy number")}</div><div class="grid2">${f("phone", "24-hour assistance phone", "+1…", "tel")}${f("claim", "Claims website", "https://…", "url")}</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">${tel(e.phone, "Call assistance")}${/^https:/.test(e.claim || "") ? `<a class="btn ghost small" href="${esc(e.claim)}" target="_blank" rel="noopener">Claims ↗</a>` : ""}</div></div>
+    <div class="card sos-form"><h3>Contacts back home</h3><div class="grid2">${f("c1name", "Name")}${f("c1phone", "Phone", "", "tel")}</div><div class="grid2">${f("c2name", "Name")}${f("c2phone", "Phone", "", "tel")}</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">${tel(e.c1phone, e.c1name ? "Call " + e.c1name : "")}${tel(e.c2phone, e.c2name ? "Call " + e.c2name : "")}</div></div>
+    <div class="card sos-form"><h3>Notes</h3><textarea data-sos="notes" rows="3" maxlength="800" placeholder="Credit card lost/stolen numbers, where the spare key is, anything the group should know">${esc(e.notes || "")}</textarea><p class="hint">Don't put full card or passport numbers here.</p></div>`;
+  v.onclick = ev => { const d = ev.target.closest("[data-driver]"); if (d) driverCard(d.dataset.driver); const sb = ev.target.closest("[data-say]"); if (sb) say(sb.dataset.say, sb.dataset.lang, sb); };
+  v.onchange = ev => { const k = ev.target.dataset?.sos; if (!k) return; const val = ev.target.value.trim().slice(0, k === "notes" ? 800 : 120);
+    T.trip.emergency = { ...(T.trip.emergency || {}), [k]: val }; updateDoc(doc(fs, "trips/" + cur.id), { ["emergency." + k]: val }).catch(fail); renderTrip(); };
+}
 // ---- tap to hear a phrase (the phone's own voices; works offline on most phones)
 const SPEECH = { ja: "ja-JP", ko: "ko-KR", yue: "zh-HK", zh: "zh-CN", zht: "zh-TW", th: "th-TH", vi: "vi-VN", fr: "fr-FR", es: "es-ES", it: "it-IT", de: "de-DE", ptp: "pt-PT", ptb: "pt-BR", nl: "nl-NL", da: "da-DK", sv: "sv-SE", no: "nb-NO", fi: "fi-FI", is: "is-IS", el: "el-GR", cs: "cs-CZ", hu: "hu-HU", pl: "pl-PL", hr: "hr-HR", tr: "tr-TR", id: "id-ID", ms: "ms-MY", fil: "fil-PH", hi: "hi-IN", ar: "ar-SA" };
 const canSpeak = lang => "speechSynthesis" in window && !!SPEECH[lang];
@@ -2602,6 +2931,80 @@ function accessModal() {
 
 // ================================================================ PROFILE
 let PROFILE = {}, profUnsub = null;
+let SOMEDAY = [], somUnsub = null;
+function subscribeSomeday() { somUnsub?.(); somUnsub = onSnapshot(doc(fs, `users/${ME.uid}/prefs/someday`), s => { SOMEDAY = s.exists() ? s.data().items || [] : []; if (location.hash.startsWith("#/someday")) renderSomeday(); else if (!cur && !location.hash.startsWith("#/help") && !location.hash.startsWith("#/stats")) renderHome(); }, () => {}); }
+const saveSomeday = () => setDoc(doc(fs, `users/${ME.uid}/prefs/someday`), { items: SOMEDAY, updated: Date.now() }).catch(fail);
+const somKey = x => (x.name + "|" + (x.city || "")).toLowerCase();
+function addSomeday(x, from = "") {
+  if (SOMEDAY.some(y => somKey(y) === somKey(x))) { toast(`${esc(x.name)} is already on your someday list.`); return false; }
+  SOMEDAY = [{ id: uidGen(), name: (x.name || "").slice(0, 80), type: x.type || "other", city: x.city || "", country: x.country || "", lat: x.lat ?? null, lon: x.lon ?? null, addr: x.addr || "", link: x.link || "", gid: x.gid || "", notes: (x.notes || "").slice(0, 300), photo: /^https:/.test(x.photoUrl || "") ? x.photoUrl : "", from, added: Date.now() }, ...SOMEDAY].slice(0, 500);
+  saveSomeday(); toast(`Saved ${esc(x.name)} to your someday list.`); return true;
+}
+// any place card: ☆ saves it to your someday list
+document.addEventListener("click", e => { const b = e.target.closest("[data-someday]"); if (!b || !cur) return; e.stopPropagation(); const p = T.places[b.dataset.someday]; if (p && addSomeday(p, T.trip?.name || "")) renderTrip(); }, true);
+async function addSomedayToTrip(item, tid) {
+  const { id, from, added, photo, ...x } = item, pid = uidGen(), p = { ...newPlaceFrom(x), notes: item.notes || "", photoUrl: photo || "" };
+  await setDoc(doc(fs, `trips/${tid}/places/${pid}`), p); if (cur?.id === tid) T.places[pid] = p;
+}
+function renderSomeday() {
+  $("#crumb").textContent = "Someday list"; $("#backBtn").hidden = false; $("#layoutSeg").hidden = true;
+  const groups = {}; SOMEDAY.forEach(x => (groups[x.country || "Other"] ||= []).push(x));
+  const trips = Object.entries(TRIPS).sort((a, b) => String(a[1].start || "9").localeCompare(String(b[1].start || "9")));
+  $("#app").innerHTML = `<div class="home someday"><div><h1>⭐ Someday list</h1><p class="hint">Places you'd love to go one day, across all your trips. Only you can see this list. When a trip comes together, add them in one tap.</p></div>
+    <div class="card"><div class="suggest-wrap"><input id="sdQ" autocomplete="off" placeholder="Search for a place to save…" role="combobox" aria-expanded="false" aria-controls="sdL"><ul class="suggest" id="sdL" role="listbox" hidden></ul></div></div>
+    ${SOMEDAY.length ? Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0])).map(([c, xs]) => `<section><h2 class="sd-h">${esc(c)} <span class="hint" style="display:inline">${xs.length}</span></h2><div class="sd-list">${xs.map(x => `<div class="card sd-item">
+      <div class="grow"><b>${esc(x.name)}</b><span class="hint">${esc([TYPE[x.type]?.label, x.city].filter(Boolean).join(" · "))}${x.from ? " · from " + esc(x.from) : ""}</span>${x.notes ? `<p class="hint">${esc(x.notes)}</p>` : ""}</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap">${trips.length ? `<select class="input" data-sdadd="${x.id}" aria-label="Add ${esc(x.name)} to a trip" style="width:auto"><option value="">Add to a trip…</option>${trips.map(([id, t]) => `<option value="${id}">${esc(t.name || "Trip")}</option>`).join("")}</select>` : ""}${hasPt(x) ? `<a class="ext" href="https://www.google.com/maps/search/?api=1&query=${x.lat},${x.lon}" target="_blank" rel="noopener">Map ↗</a>` : ""}<button class="iconbtn del" type="button" data-sddel="${x.id}" aria-label="Remove ${esc(x.name)}">×</button></div></div>`).join("")}</div></section>`).join("")
+      : `<div class="empty">Nothing saved yet. Search above, or tap ☆ on any place in a trip.</div>`}</div>`;
+  attachSuggest($("#sdQ"), $("#sdL"), { onPick: async x => { const y = await withAddress(x).catch(() => x); addSomeday({ ...x, ...y }); $("#sdQ").value = ""; } });
+  $("#app").onclick = e => { const d = e.target.closest("[data-sddel]"); if (d) { if (!confirmTap(d)) return; SOMEDAY = SOMEDAY.filter(x => x.id !== d.dataset.sddel); saveSomeday(); renderSomeday(); } };
+  $("#app").onchange = async e => { const s2 = e.target.closest("[data-sdadd]"); if (!s2 || !s2.value) return; const x = SOMEDAY.find(y => y.id === s2.dataset.sdadd), tid = s2.value;
+    try { await addSomedayToTrip(x, tid); toast(`Added ${esc(x.name)} to ${esc(TRIPS[tid]?.name || "the trip")}.`, { label: "Open trip", run: () => { location.hash = `#/t/${tid}/places`; } }); } catch { toast("Couldn't add it. Check your connection."); } s2.value = ""; };
+}
+function somedayPickModal() {
+  const dests = [...tripDests(T.trip).filter(hasPt), ...placeList().filter(hasPt)], near = x => hasPt(x) && dests.length ? Math.min(...dests.map(d => km(d, x))) : 1e9;
+  const have = new Set(placeList().map(somKey)), list = SOMEDAY.filter(x => !have.has(somKey(x))).sort((a, b) => near(a) - near(b));
+  openModal(`<div class="row between"><h2>⭐ From your someday list</h2><button class="iconbtn" type="button" data-close aria-label="Close">×</button></div>
+    ${list.length ? `<p class="hint">Closest to this trip first.</p><div class="sd-pick">${list.map(x => `<label class="st-item"><input type="checkbox" data-sdp="${x.id}" ${near(x) < 100 ? "checked" : ""}><span class="grow"><b>${esc(x.name)}</b><span class="hint">${esc([x.city, x.country].filter(Boolean).join(", "))}${near(x) < 1e8 ? ` · ${Math.round(near(x))} km away` : ""}</span></span></label>`).join("")}</div>
+      <div class="row" style="justify-content:flex-end"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn accent" type="button" id="sdpGo">Add to this trip</button></div>`
+      : `<p class="hint">${SOMEDAY.length ? "Everything on your someday list is already in this trip." : "Your someday list is empty. Tap ☆ on a place to save it for a future trip, or open it from Your trips."}</p><a class="btn small" href="#/someday">Open someday list</a>`}`, m => {
+    $$("[data-close]", m).forEach(x => x.onclick = closeModal);
+    $("#sdpGo") && ($("#sdpGo").onclick = async () => { const ids = $$("[data-sdp]", m).filter(c => c.checked).map(c => c.dataset.sdp); for (const id of ids) await addSomedayToTrip(SOMEDAY.find(x => x.id === id), cur.id).catch(() => {}); closeModal(); renderTrip(); renderMap(); toast(`Added ${ids.length} place${ids.length === 1 ? "" : "s"}.`); });
+  });
+}
+
+// ================================================================ YOUR TRAVELS (map and stats across trips)
+async function renderStats() {
+  $("#crumb").textContent = "Your travels"; $("#backBtn").hidden = false; $("#layoutSeg").hidden = true;
+  $("#app").innerHTML = `<div class="home stats-page"><div><h1>🌍 Your travels</h1><p class="hint">Every trip you're on, in one place.</p></div><p class="hint" id="stLoad">Adding up your trips…</p></div>`;
+  await loadAirports(); await loadCG();
+  const trips = Object.entries(TRIPS), today = isoOf(new Date()), pts = [], arcs = [], countries = new Set(), cities = new Set();
+  let miles = 0, flights = 0, nights = 0, past = 0, up = 0;
+  for (const [tid, t] of trips) {
+    const done = validIso(t.end) && t.end < today; if (validIso(t.start)) { if (done) { past++; nights += Math.max(0, daysBetween(t.start, t.end)); } else up++; }
+    tripDests(t).forEach(d => { if (d.country && d.country !== "United States") countries.add(d.country); if (hasPt(d)) pts.push({ ...d, trip: t.name, tid, done }); });
+    const [bk, pl] = await Promise.all([getDocs(collection(fs, `trips/${tid}/bookings`)).catch(() => null), getDocs(collection(fs, `trips/${tid}/places`)).catch(() => null)]);
+    pl?.docs.forEach(d => { const p = d.data(); if (p.city) cities.add(p.city + "|" + (p.country || "")); if (p.country && cgFind(p.country) && p.country !== "United States") countries.add(cgFind(p.country).name); });
+    bk?.docs.forEach(d => { const b = d.data(); if (b.kind !== "flight" || b.planned) return; flightSegs(b).forEach(l => { const a = airportOf(l.from), z = airportOf(l.to); if (!a || !z) return; flights++; miles += km(a, z) * 0.621371; arcs.push([a, z, done]);
+      const c = CG?.countries.find(x => x.cc === z.cc); if (c && c.name !== "United States") countries.add(c.name); }); });
+  }
+  const box = $(".stats-page"); if (!box) return;
+  const stat = (v, k, s = "") => `<div class="stat"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
+  box.innerHTML = `<div><h1>🌍 Your travels</h1><p class="hint">Every trip you're on, in one place. Countries other than the U.S. and flights booked in Wayfinder count.</p></div>
+    <div class="stats">${stat(trips.length, "Trips", `${past} done · ${up} coming up`)}${stat(countries.size, "Countries", "outside the U.S.")}${stat(Math.round(miles).toLocaleString("en-US"), "Miles flown", `${flights} flight${flights === 1 ? "" : "s"}`)}${stat(nights, "Nights away", "on finished trips")}</div>
+    <div class="card" style="padding:0;overflow:hidden"><div id="statsMap" style="height:420px"></div></div>
+    ${countries.size ? `<div class="card"><h3>Countries</h3><div class="chips">${[...countries].sort().map(c => `<span class="chip on">${esc(c)}</span>`).join("")}</div></div>` : ""}
+    <div class="card"><h3>Trips</h3>${trips.sort((a, b) => String(b[1].start || "").localeCompare(String(a[1].start || ""))).map(([id, t]) => `<a class="sh-row" href="#/t/${id}"><b>${validIso(t.start) ? esc(fmtD(t.start, { month: "short", year: "numeric" })) : "No dates"}</b><span>${esc(t.name || "Trip")}<span class="hint">${esc(destLabel(t) || "")}</span></span><span></span></a>`).join("")}</div>`;
+  const sm = L.map("statsMap", { worldCopyJump: true, zoomControl: true }); L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(sm);
+  if (document.documentElement.dataset.theme === "dark") sm.getContainer().classList.add("dark-tiles");
+  const all = [];
+  const unwrap = l => { for (let i = 1; i < l.length; i++) { while (l[i][1] - l[i - 1][1] > 180) l[i][1] -= 360; while (l[i][1] - l[i - 1][1] < -180) l[i][1] += 360; } return l; };
+  for (const [a, z, done] of arcs) { const line = unwrap(arc(a, z)); L.polyline(line, { color: done ? "#D9483B" : "#2F80ED", weight: 2, opacity: .7, dashArray: done ? null : "5 6" }).addTo(sm); all.push(...line); }
+  for (const p of pts) { L.circleMarker([p.lat, p.lon], { radius: 7, color: "#fff", weight: 2, fillColor: p.done ? "#D9483B" : "#2F80ED", fillOpacity: 1 }).bindPopup(`<b>${esc(p.name)}</b><br><a href="#/t/${p.tid}">${esc(p.trip || "Trip")}</a>`).addTo(sm); all.push([p.lat, p.lon]); }
+  if (all.length) sm.fitBounds(L.latLngBounds(all).pad(0.15), { maxZoom: 6 }); else sm.setView([25, -150], 2);
+  box.insertAdjacentHTML("beforeend", `<p class="hint"><span style="color:#D9483B">●</span> done · <span style="color:#2F80ED">●</span> coming up</p>`);
+}
+
 function subscribeProfile() {
   profUnsub?.();
   profUnsub = onSnapshot(doc(fs, `users/${ME.uid}/prefs/profile`), s => { PROFILE = s.exists() ? s.data() : {}; applyProfile(); }, () => {});
@@ -3570,6 +3973,8 @@ function viewOverview(v) {
       <div class="stat"><span class="k">Spent</span><span class="v">${money(spent)}</span><span class="s">${num(t.budget) ? "of " + money(num(t.budget)) : "no budget set"}</span></div></div>
     ${comingUpHtml()}
     ${jetLagHtml()}
+    ${roadCard()}
+    ${offlineCard()}
     <div class="card" style="display:grid;gap:12px"><h3>Trip details</h3>
       <label class="field" for="ovName">Name<input id="ovName" maxlength="60" value="${esc(t.name || "")}" data-live></label>
       <div class="field"><label for="ovDest">Destinations</label><div class="dchips" id="ovChips"></div><div class="suggest-wrap"><input id="ovDest" autocomplete="off" placeholder="Add a country, region or city" role="combobox" aria-expanded="false" aria-controls="ovDestL"><ul class="suggest" id="ovDestL" role="listbox" hidden></ul></div></div>
@@ -3601,12 +4006,13 @@ function viewOverview(v) {
   };
   $("#ovCoverFile").onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const d = await shrink(f, 1400, 450000); await updateDoc(tripRef, { cover: d, coverCredit: "", coverSrc: "" }); } catch (err) { toast(esc(err.message)); } };
   $("#ovInvite").onclick = inviteModal;
+  wireRoad(v);
   let armed = false;
   $("#ovDanger").onclick = async () => {
     if (!armed) { armed = true; $("#ovDanger").textContent = isOwner() ? "Tap again to delete for everyone" : "Tap again to leave"; return; }
     const tid = cur.id;
     if (isOwner()) {
-      for (const sub of ["places", "days", "bookings", "expenses", "checklist", "photos", "notes"]) { const s = await getDocs(collection(fs, `trips/${tid}/${sub}`)).catch(() => null); s?.docs.forEach(d => deleteDoc(d.ref).catch(() => {})); }
+      for (const sub of ["places", "days", "bookings", "expenses", "checklist", "photos", "notes", "polls", "tickets"]) { const s = await getDocs(collection(fs, `trips/${tid}/${sub}`)).catch(() => null); s?.docs.forEach(d => deleteDoc(d.ref).catch(() => {})); }
       await deleteDoc(doc(fs, "trips/" + tid)).catch(fail);
     } else await updateDoc(doc(fs, "trips/" + tid), { members: members().filter(e => e !== ME.email) }).catch(fail);
     location.hash = "#/";
@@ -3919,7 +4325,7 @@ async function setTiles() {
     tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
     map.getContainer().classList.toggle("dark-tiles", dark);
   };
-  if (useGoogle()) {
+  if (useGoogle() && navigator.onLine) {
     try {
       await loadGoogle(); if (!L.gridLayer.googleMutant) await loadScript(GM_MUTANT);
       if (my !== tileSeq || !map) return;
